@@ -8,6 +8,8 @@
 
 Не делить контекст на огромные блоки `core / characters / memory`.
 
+Движок ведёт сюжетную интерактивную новеллу, а не симулятор, песочницу или пошаговый бытовой маршрут.
+
 ## Основной порядок
 
 ```text
@@ -20,10 +22,11 @@
 7. character knowledge slices
 8. relationship pairs / preferences for active pairs
 9. topic canon by trigger
-10. gpt/scene_format.md
-11. gpt/engine_prompt.md
-12. gpt/context_loading_policy.md
-13. turn-contract response
+10. canon/scene_is_not_simulator.md
+11. gpt/scene_format.md
+12. gpt/engine_prompt.md
+13. gpt/context_loading_policy.md
+14. turn-contract response
 ```
 
 ## До игровой сцены
@@ -50,6 +53,7 @@ API должен определить:
 - `gpt/engine_prompt.md`
 - `gpt/context_loading_policy.md`
 - `gpt/scene_format.md`
+- `canon/scene_is_not_simulator.md`
 - `calendar/story_calendar.md` для текущего окна
 - current state из volume
 - current scene anchor
@@ -73,6 +77,7 @@ API должен определить:
 - браслет, блокировка, маскировка сигнатуры → `canon/energy_limiters_and_signature_masking.md`
 - Восточная база, быт, общежитие, рейды → `canon/east_sector_base.md`
 - скрытая причинность Эхо / баланс → `canon/world_hidden_lore.md`
+- пустой быт, переходы, темп, несимуляторность сцены → `canon/scene_is_not_simulator.md`
 
 Hidden lore не давать NPC как знание без knowledge.
 
