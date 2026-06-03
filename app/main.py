@@ -12,11 +12,61 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 APP_ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = Path(os.getenv("RAILWAY_VOLUME_MOUNT_PATH", os.getenv("DATA_DIR", "./data")))
+PROJECT_SLUG = os.getenv("PROJECT_SLUG", "akira-main-1206")
+DEFAULT_SESSION_ID = os.getenv("DEFAULT_SESSION_ID", "main-1206-default")
+START_SCENE_FILE = os.getenv("START_SCENE_FILE", "data/scenes/start_scene.md")
+DEFAULT_PUBLIC_BASE_URL = "https://akira-main-1206-production.up.railway.app"
+
+
+def running_on_railway() -> bool:
+    return any(
+        os.getenv(key)
+        for key in (
+            "RAILWAY_ENVIRONMENT",
+            "RAILWAY_PROJECT_ID",
+            "RAILWAY_SERVICE_ID",
+            "RAILWAY_DEPLOYMENT_ID",
+        )
+    )
+
+
+def resolve_data_dir() -> Path:
+    """Pick the persistent state directory.
+
+    Railway mounts the volume wherever we set the mount path in the dashboard.
+    For this project the expected mount path is /data. Locally we keep ./data.
+    """
+
+    default_data_dir = "/data" if running_on_railway() else "./data"
+    return Path(
+        os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
+        or os.getenv("DATA_DIR")
+        or default_data_dir
+    )
+
+
+def normalize_base_url(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    value = value.strip().rstrip("/")
+    if not value:
+        return ""
+    if value.startswith(("http://", "https://")):
+        return value
+    return f"https://{value}"
+
+
+def resolve_public_base_url() -> str:
+    return (
+        normalize_base_url(os.getenv("PUBLIC_BASE_URL"))
+        or normalize_base_url(os.getenv("RAILWAY_PUBLIC_DOMAIN"))
+        or DEFAULT_PUBLIC_BASE_URL
+    )
+
+
+DATA_DIR = resolve_data_dir()
 SESSIONS_DIR = DATA_DIR / "sessions"
-DEFAULT_SESSION_ID = "main-1206-default"
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://akira-main-1206-production.up.railway.app")
-START_SCENE_FILE = "data/scenes/start_scene.md"
+PUBLIC_BASE_URL = resolve_public_base_url()
 
 START_COMMANDS = {
     "начнем",
@@ -28,9 +78,9 @@ START_COMMANDS = {
 }
 
 app = FastAPI(
-    title="Akira Main 1206 API",
-    version="1.1.0",
-    description="Railway API for Akira Main 1206 session context and state saving.",
+    title=f"{PROJECT_SLUG} API",
+    version="1.2.0",
+    description="Railway API for Akira session context, GPT Actions, and persistent state saving.",
 )
 
 
@@ -135,7 +185,7 @@ def is_start_command(text: str) -> bool:
 def default_current_state() -> Dict[str, Any]:
     return {
         "schema": "current_state_v1",
-        "project": "akira-main-1206",
+        "project": PROJECT_SLUG,
         "date": "1206-08-31",
         "time": "02:40",
         "scene_id": "start_scene",
@@ -179,7 +229,13 @@ def get_story_lines(session_id: str) -> Dict[str, Any]:
     state = read_json(path, None)
     if state is None:
         repo_starter = read_json(APP_ROOT / "state/story_lines.json", None)
-        state = repo_starter if isinstance(repo_starter, dict) else {"turn_counter": {"total_game_turns": 0, "since_last_compaction": 0, "compact_every_turns": 15}}
+        state = repo_starter if isinstance(repo_starter, dict) else {
+            "turn_counter": {
+                "total_game_turns": 0,
+                "since_last_compaction": 0,
+                "compact_every_turns": 15,
+            }
+        }
         write_json_atomic(path, state)
     return state
 
@@ -366,6 +422,14 @@ def actions_schema_json() -> Dict[str, Any]:
         "message": {"type": "string"},
         "time": {"type": "string"},
     })
+    turn_contract_request = object_schema({
+        "user_input": {"type": "string"},
+        "mode": {"type": "string", "enum": ["play", "technical", "audit", "transfer"]},
+        "client_context": object_schema({
+            "last_assistant_message_id": {"type": "string"},
+            "known_current_scene_anchor": {"type": "string"},
+        }),
+    }, required=["user_input", "mode"])
     turn_contract_response = object_schema({
         "session_id": {"type": "string"},
         "mode": {"type": "string"},
@@ -404,6 +468,24 @@ def actions_schema_json() -> Dict[str, Any]:
         "checks": string_array,
         "message": {"type": "string"},
     })
+    turn_result_request = object_schema({
+        "scene_id": {"type": "string"},
+        "scene_text": {"type": "string"},
+        "technical": {"type": "boolean"},
+        "state_patches": object_schema({
+            "current_state_patch": object_schema({}),
+            "scene_history_entry": object_schema({}),
+            "story_line_patches": object_schema({}),
+            "relationship_patches": object_schema({}),
+            "knowledge_patches": object_schema({}),
+            "inventory_patches": object_schema({}),
+            "rumor_patches": object_schema({}),
+            "reputation_patches": object_schema({}),
+            "power_state_patches": object_schema({}),
+            "summary_update": {"type": "string"},
+            "compaction_summary": {"type": "string"},
+        }),
+    }, required=["scene_id", "scene_text", "technical"])
     turn_result_response = object_schema({
         "success": {"type": "boolean"},
         "status": {"type": "string"},
@@ -414,9 +496,9 @@ def actions_schema_json() -> Dict[str, Any]:
     return {
         "openapi": "3.1.0",
         "info": {
-            "title": "Akira Main 1206 API",
-            "version": "1.1.0",
-            "description": "Railway API for Akira Main 1206 session context and state saving.",
+            "title": f"{PROJECT_SLUG} API",
+            "version": "1.2.0",
+            "description": "Railway API for Akira session context, GPT Actions, and persistent state saving.",
         },
         "servers": [{"url": PUBLIC_BASE_URL}],
         "paths": {
@@ -442,22 +524,20 @@ def actions_schema_json() -> Dict[str, Any]:
                     })}}}},
                 }
             },
+            "/api/v1/turn/context": {
+                "post": {
+                    "operationId": "getTurnContext",
+                    "summary": "Get default-session turn context before generating a scene",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": turn_contract_request}}},
+                    "responses": {"200": {"description": "Turn context", "content": {"application/json": {"schema": turn_contract_response}}}},
+                }
+            },
             "/api/v1/sessions/{session_id}/turn-contract": {
                 "post": {
                     "operationId": "getTurnContract",
-                    "summary": "Get turn context before generating a scene",
+                    "summary": "Get session turn context before generating a scene",
                     "parameters": [{"name": "session_id", "in": "path", "required": True, "schema": {"type": "string"}}],
-                    "requestBody": {
-                        "required": True,
-                        "content": {"application/json": {"schema": object_schema({
-                            "user_input": {"type": "string"},
-                            "mode": {"type": "string", "enum": ["play", "technical", "audit", "transfer"]},
-                            "client_context": object_schema({
-                                "last_assistant_message_id": {"type": "string"},
-                                "known_current_scene_anchor": {"type": "string"},
-                            }),
-                        }, required=["user_input", "mode"]) }},
-                    },
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": turn_contract_request}}},
                     "responses": {"200": {"description": "Turn contract", "content": {"application/json": {"schema": turn_contract_response}}}},
                 }
             },
@@ -466,27 +546,7 @@ def actions_schema_json() -> Dict[str, Any]:
                     "operationId": "submitTurnResult",
                     "summary": "Save generated scene and state patches",
                     "parameters": [{"name": "session_id", "in": "path", "required": True, "schema": {"type": "string"}}],
-                    "requestBody": {
-                        "required": True,
-                        "content": {"application/json": {"schema": object_schema({
-                            "scene_id": {"type": "string"},
-                            "scene_text": {"type": "string"},
-                            "technical": {"type": "boolean"},
-                            "state_patches": object_schema({
-                                "current_state_patch": object_schema({}),
-                                "scene_history_entry": object_schema({}),
-                                "story_line_patches": object_schema({}),
-                                "relationship_patches": object_schema({}),
-                                "knowledge_patches": object_schema({}),
-                                "inventory_patches": object_schema({}),
-                                "rumor_patches": object_schema({}),
-                                "reputation_patches": object_schema({}),
-                                "power_state_patches": object_schema({}),
-                                "summary_update": {"type": "string"},
-                                "compaction_summary": {"type": "string"},
-                            }),
-                        }, required=["scene_id", "scene_text", "technical"]) }},
-                    },
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": turn_result_request}}},
                     "responses": {"200": {"description": "Turn result saved", "content": {"application/json": {"schema": turn_result_response}}}},
                 }
             },
@@ -498,9 +558,9 @@ def actions_schema_yaml() -> str:
     return f"""
 openapi: 3.1.0
 info:
-  title: Akira Main 1206 API
-  version: "1.1.0"
-  description: Railway API for Akira Main 1206 session context and state saving.
+  title: {PROJECT_SLUG} API
+  version: "1.2.0"
+  description: Railway API for Akira session context, GPT Actions, and persistent state saving.
 servers:
   - url: {PUBLIC_BASE_URL}
 paths:
@@ -518,10 +578,30 @@ paths:
       responses:
         "200":
           description: Railway volume status
+  /api/v1/turn/context:
+    post:
+      operationId: getTurnContext
+      summary: Get default-session turn context before generating a scene
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_input, mode]
+              properties:
+                user_input:
+                  type: string
+                mode:
+                  type: string
+                  enum: [play, technical, audit, transfer]
+      responses:
+        "200":
+          description: Turn context
   /api/v1/sessions/{{session_id}}/turn-contract:
     post:
       operationId: getTurnContract
-      summary: Get turn context before generating a scene
+      summary: Get session turn context before generating a scene
       parameters:
         - name: session_id
           in: path
@@ -580,12 +660,14 @@ paths:
 def root() -> Dict[str, Any]:
     return {
         "status": "ok",
-        "service": "Akira Main 1206 API",
+        "service": f"{PROJECT_SLUG} API",
         "docs": "/docs",
         "openapi": "/openapi.json",
         "actions_schema_yaml": "/openapi-actions.yaml",
         "actions_schema_json": "/openapi-actions.json",
         "start_command": "начнем",
+        "public_base_url": PUBLIC_BASE_URL,
+        "data_dir": str(DATA_DIR),
     }
 
 
@@ -611,6 +693,11 @@ def debug_volume() -> Dict[str, Any]:
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/turn/context")
+def turn_context(req: TurnContractRequest) -> Dict[str, Any]:
+    return build_turn_contract(DEFAULT_SESSION_ID, req)
 
 
 @app.post("/api/v1/sessions/{session_id}/turn-contract")
