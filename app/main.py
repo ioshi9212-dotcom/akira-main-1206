@@ -16,6 +16,7 @@ DATA_DIR = Path(os.getenv("RAILWAY_VOLUME_MOUNT_PATH", os.getenv("DATA_DIR", "./
 SESSIONS_DIR = DATA_DIR / "sessions"
 DEFAULT_SESSION_ID = "main-1206-default"
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://akira-main-1206-production.up.railway.app")
+START_SCENE_FILE = "data/scenes/start_scene.md"
 
 app = FastAPI(
     title="Akira Main 1206 API",
@@ -85,6 +86,34 @@ def existing_files(paths: List[str]) -> List[str]:
     return [path for path in paths if repo_file_exists(path)]
 
 
+def read_repo_text(relative_path: str) -> str:
+    path = APP_ROOT / relative_path
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+def extract_first_text_block(markdown: str) -> str:
+    marker = "## Текст первого вывода"
+    start = markdown.find(marker)
+    if start == -1:
+        return ""
+    block_start = markdown.find("```text", start)
+    if block_start == -1:
+        return ""
+    content_start = markdown.find("\n", block_start)
+    if content_start == -1:
+        return ""
+    block_end = markdown.find("```", content_start + 1)
+    if block_end == -1:
+        return ""
+    return markdown[content_start + 1:block_end].strip()
+
+
+def get_start_scene_text() -> str:
+    return extract_first_text_block(read_repo_text(START_SCENE_FILE))
+
+
 def default_current_state() -> Dict[str, Any]:
     return {
         "date": "1206-08-31",
@@ -95,6 +124,9 @@ def default_current_state() -> Dict[str, Any]:
         "nearby_characters": [],
         "conditional_characters": ["raiden_sterling"],
         "akira_state": "резко проснулась; тело напряжено; память держит только последние два года",
+        "first_scene_delivered": False,
+        "turn_counter": 0,
+        "compact_every": 15,
         "updated_at": utc_now(),
     }
 
@@ -107,6 +139,12 @@ def get_current_state(session_id: str) -> Dict[str, Any]:
         state = default_current_state()
         write_json_atomic(path, state)
     return state
+
+
+def save_current_state(session_id: str, state: Dict[str, Any]) -> None:
+    session_dir = ensure_dirs(session_id)
+    state["updated_at"] = utc_now()
+    write_json_atomic(session_dir / "current_state.json", state)
 
 
 def classify_mode(req: TurnContractRequest) -> str:
@@ -136,7 +174,7 @@ def build_required_files(state: Dict[str, Any], mode: str) -> List[str]:
 
     scene_id = state.get("scene_id", "start_scene")
     if scene_id == "start_scene":
-        base.extend(["data/scenes/start_scene.md", "data/scenes/start_scene_logic.md"])
+        base.extend([START_SCENE_FILE, "data/scenes/start_scene_logic.md"])
 
     character_map = {
         "akira": "characters/main/akira_akatsumi.md",
@@ -175,12 +213,25 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
     is_game_turn = mode == "play"
     state = get_current_state(session_id)
     scene_id = state.get("scene_id", "start_scene")
+    first_scene_text = ""
+    must_output_initial_scene_text = False
+
+    if is_game_turn and scene_id == "start_scene" and not state.get("first_scene_delivered", False):
+        first_scene_text = get_start_scene_text()
+        must_output_initial_scene_text = bool(first_scene_text)
+
+    turn_counter = int(state.get("turn_counter", 0) or 0)
+    compact_every = int(state.get("compact_every", 15) or 15)
+    should_compact = is_game_turn and turn_counter > 0 and turn_counter % compact_every == 0
 
     return {
         "session_id": safe_session_id(session_id),
         "mode": mode,
         "is_game_turn": is_game_turn,
         "can_generate_scene": True,
+        "response_mode": "emit_initial_scene_text_verbatim" if must_output_initial_scene_text else "generate_next_scene_from_contract",
+        "must_output_initial_scene_text": must_output_initial_scene_text,
+        "initial_scene_text": first_scene_text,
         "current_scene_anchor": {
             "date": state.get("date"),
             "time": state.get("time"),
@@ -204,14 +255,18 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
         ],
         "topic_triggers": ["start_scene", "calendar", "scene_format"],
         "relationship_pairs_needed": [],
+        "turn_counter": turn_counter,
+        "compact_every": compact_every,
+        "should_compact": should_compact,
         "checks": [
+            "if_must_output_initial_scene_text_true_emit_initial_scene_text_verbatim",
             "do_not_reveal_unknown_names",
             "do_not_introduce_echo_before_calendar_condition",
             "do_not_make_raiden_active_before_condition",
             "do_not_advance_time_for_technical_turn",
             "story_not_simulator_or_sandbox",
         ],
-        "message": "Turn contract ready. Load only required_files and obey checks.",
+        "message": "Turn contract ready. If must_output_initial_scene_text is true, output initial_scene_text verbatim.",
     }
 
 
@@ -235,6 +290,9 @@ def actions_schema_json() -> Dict[str, Any]:
         "mode": {"type": "string"},
         "is_game_turn": {"type": "boolean"},
         "can_generate_scene": {"type": "boolean"},
+        "response_mode": {"type": "string"},
+        "must_output_initial_scene_text": {"type": "boolean"},
+        "initial_scene_text": {"type": "string"},
         "current_scene_anchor": object_schema({
             "date": {"type": "string"},
             "time": {"type": "string"},
@@ -254,6 +312,9 @@ def actions_schema_json() -> Dict[str, Any]:
         "forbidden_files_or_topics": string_array,
         "topic_triggers": string_array,
         "relationship_pairs_needed": string_array,
+        "turn_counter": {"type": "integer"},
+        "compact_every": {"type": "integer"},
+        "should_compact": {"type": "boolean"},
         "checks": string_array,
         "message": {"type": "string"},
     })
@@ -355,7 +416,6 @@ def actions_schema_json() -> Dict[str, Any]:
 
 
 def actions_schema_yaml() -> str:
-    # JSON endpoint is preferred. YAML is kept as a readable fallback.
     return """
 openapi: 3.1.0
 info:
@@ -451,6 +511,12 @@ paths:
                     type: boolean
                   can_generate_scene:
                     type: boolean
+                  response_mode:
+                    type: string
+                  must_output_initial_scene_text:
+                    type: boolean
+                  initial_scene_text:
+                    type: string
                   required_files:
                     type: array
                     items:
@@ -571,10 +637,14 @@ def turn_result(session_id: str, req: TurnResultRequest) -> Dict[str, Any]:
     patch = req.state_patches.get("current_state_patch") if isinstance(req.state_patches, dict) else None
     if isinstance(patch, dict):
         current_state.update(patch)
-        current_state["updated_at"] = utc_now()
-        write_json_atomic(session_dir / "current_state.json", current_state)
 
+    if req.scene_id == "start_scene":
+        current_state["first_scene_delivered"] = True
+
+    current_state["turn_counter"] = int(current_state.get("turn_counter", 0) or 0) + 1
+    save_current_state(session_id, current_state)
     write_json_atomic(session_dir / "last_turn_result.json", req.model_dump())
+
     return {
         "success": True,
         "status": "turn_result_saved",
