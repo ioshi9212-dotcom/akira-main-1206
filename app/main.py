@@ -107,8 +107,8 @@ PUBLIC_BASE_URL = normalize_base_url(os.getenv("PUBLIC_BASE_URL")) or normalize_
 
 app = FastAPI(
     title="Akira Main 1206 API",
-    version="1.5.1",
-    description="Railway API for Akira Main 1206 with dense turn context and state saving.",
+    version="1.5.2",
+    description="Railway API for Akira Main 1206 with dense turn context and scene output contract.",
 )
 
 
@@ -371,6 +371,31 @@ def get_turn_counts(session_id: str, state: Dict[str, Any]) -> Dict[str, int]:
     }
 
 
+def scene_output_contract(started: bool, response_mode: str) -> Dict[str, Any]:
+    if response_mode == "emit_initial_scene_text_verbatim":
+        return {
+            "mode": "initial_exact_text",
+            "must_output_only_initial_scene_text": True,
+            "do_not_add_header_or_options": True,
+        }
+    return {
+        "mode": "generated_scene",
+        "mandatory_source_file": "gpt/scene_format.md",
+        "format_is_mandatory": True,
+        "must_start_with_scene_header": True,
+        "must_not_start_with_technical_comment": True,
+        "must_not_write_json_to_user": True,
+        "must_not_write_for_akira": True,
+        "must_check_npc_knowledge_before_each_line": True,
+        "stop_on_direct_question_to_akira": True,
+        "keep_to_player_action_scale": True,
+        "avoid_poetic_water": True,
+        "avoid_romantic_trauma_drama": True,
+        "post_start_scene": started,
+        "allowed_after_scene_options": "Only short possible actions, no ready-made Akira replies, no thoughts of Akira.",
+    }
+
+
 def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, Any]:
     ensure_session_state(session_id)
     mode = classify_mode(req)
@@ -417,17 +442,20 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
         "calendar_window": {"file": "calendar/story_calendar.md", "event_id": scene_id, "next_required_event": "raiden_motorcycle_arrival" if scene_id == "start_scene" else None},
         "required_files": files,
         "required_file_contents": contents,
+        "scene_output_contract": scene_output_contract(started, response_mode),
         "turn_counter": counts,
         "compact_every": counts["compact_every_turns"],
         "should_compact": mode == "play" and started and counts["since_last_compaction"] >= counts["compact_every_turns"],
         "checks": [
+            "Apply scene_output_contract before writing user-visible scene.",
+            "Use gpt/scene_format.md as mandatory output format.",
             "Use required_file_contents before character behavior.",
             "Check character knowledge before each NPC line.",
             "Do not write player decisions, emotions, or replies for Akira.",
             "Stop on direct question to Akira.",
             "After scene output, call submitTurnResult or applyTurnResult.",
         ],
-        "message": "Turn context ready. Required state, active character cards and character knowledge are included when files exist.",
+        "message": "Turn context ready. Required state, active character cards, character knowledge and scene output contract are included.",
     }
 
 
@@ -517,7 +545,7 @@ def session_parameter() -> Dict[str, Any]:
 def actions_schema_json() -> Dict[str, Any]:
     return {
         "openapi": "3.1.0",
-        "info": {"title": "Akira Main 1206 API", "version": "1.5.1"},
+        "info": {"title": "Akira Main 1206 API", "version": "1.5.2"},
         "servers": [{"url": PUBLIC_BASE_URL}],
         "paths": {
             "/health": {"get": {"operationId": "healthCheck", "summary": "Check API health", "responses": {"200": {"description": "API is running"}}}},
@@ -535,7 +563,7 @@ def actions_schema_json() -> Dict[str, Any]:
 
 @app.get("/")
 def root() -> Dict[str, Any]:
-    return {"status": "ok", "service": "Akira Main 1206 API", "version": "1.5.1", "actions_schema_json": "/openapi-actions.json"}
+    return {"status": "ok", "service": "Akira Main 1206 API", "version": "1.5.2", "actions_schema_json": "/openapi-actions.json"}
 
 
 @app.get("/health")
