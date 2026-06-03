@@ -107,7 +107,7 @@ PUBLIC_BASE_URL = normalize_base_url(os.getenv("PUBLIC_BASE_URL")) or normalize_
 
 app = FastAPI(
     title="Akira Main 1206 API",
-    version="1.5.0",
+    version="1.5.1",
     description="Railway API for Akira Main 1206 with dense turn context and state saving.",
 )
 
@@ -498,6 +498,10 @@ def request_schema() -> Dict[str, Any]:
     return object_schema({"user_input": {"type": "string"}, "mode": {"type": "string", "enum": ["play", "technical", "audit", "transfer"], "default": "play"}, "include_file_contents": {"type": "boolean", "default": True}, "client_context": {"type": "object"}}, ["user_input"])
 
 
+def process_turn_schema() -> Dict[str, Any]:
+    return object_schema({"player_input": {"type": "string"}, "mode": {"type": "string", "enum": ["play", "technical", "audit", "transfer"], "default": "play"}, "state_patches": {"type": "object"}}, ["player_input"])
+
+
 def result_schema() -> Dict[str, Any]:
     return object_schema({"scene_id": {"type": "string", "default": "scene"}, "scene_text": {"type": "string"}, "technical": {"type": "boolean", "default": False}, "state_patches": {"type": "object"}, "current_state_changes": {"type": "object"}, "story_lines_changes": {"type": "object"}, "relationship_changes": {"type": "object"}, "knowledge_changes": {"type": "object"}, "reputation_changes": {"type": "object"}, "rumor_changes": {"type": "object"}, "inventory_changes": {"type": "object"}, "power_changes": {"type": "object"}}, ["scene_text"])
 
@@ -513,13 +517,14 @@ def session_parameter() -> Dict[str, Any]:
 def actions_schema_json() -> Dict[str, Any]:
     return {
         "openapi": "3.1.0",
-        "info": {"title": "Akira Main 1206 API", "version": "1.5.0"},
+        "info": {"title": "Akira Main 1206 API", "version": "1.5.1"},
         "servers": [{"url": PUBLIC_BASE_URL}],
         "paths": {
             "/health": {"get": {"operationId": "healthCheck", "summary": "Check API health", "responses": {"200": {"description": "API is running"}}}},
             "/debug/volume": {"get": {"operationId": "debugVolume", "summary": "Check Railway volume", "responses": {"200": {"description": "Volume status"}}}},
             "/api/v1/sessions": {"post": {"operationId": "createSession", "summary": "Create or initialize session", "requestBody": json_body(object_schema({"session_id": {"type": "string"}, "reset": {"type": "boolean", "default": False}}), required=False), "responses": {"200": {"description": "Session initialized"}}}},
             "/api/v1/turn/context": {"post": {"operationId": "getDefaultTurnContext", "summary": "Get default turn context", "requestBody": json_body(request_schema()), "responses": {"200": {"description": "Turn context"}}}},
+            "/api/v1/sessions/{session_id}/turn": {"post": {"operationId": "processTurn", "summary": "Process first exact scene turn", "parameters": [session_parameter()], "requestBody": json_body(process_turn_schema()), "responses": {"200": {"description": "Turn processed"}}}},
             "/api/v1/sessions/{session_id}/turn-contract": {"post": {"operationId": "getTurnContract", "summary": "Get turn context before scene generation", "parameters": [session_parameter()], "requestBody": json_body(request_schema()), "responses": {"200": {"description": "Turn context"}}}},
             "/api/v1/sessions/{session_id}/turn-result": {"post": {"operationId": "submitTurnResult", "summary": "Save generated scene", "parameters": [session_parameter()], "requestBody": json_body(result_schema()), "responses": {"200": {"description": "Turn saved"}}}},
             "/api/v1/sessions/{session_id}/apply-turn-result": {"post": {"operationId": "applyTurnResult", "summary": "Compatibility save endpoint", "parameters": [session_parameter()], "requestBody": json_body(result_schema()), "responses": {"200": {"description": "Turn saved"}}}},
@@ -530,7 +535,7 @@ def actions_schema_json() -> Dict[str, Any]:
 
 @app.get("/")
 def root() -> Dict[str, Any]:
-    return {"status": "ok", "service": "Akira Main 1206 API", "version": "1.5.0", "actions_schema_json": "/openapi-actions.json"}
+    return {"status": "ok", "service": "Akira Main 1206 API", "version": "1.5.1", "actions_schema_json": "/openapi-actions.json"}
 
 
 @app.get("/health")
@@ -550,7 +555,7 @@ def debug_volume() -> Dict[str, Any]:
 def create_session(req: CreateSessionRequest = Body(default=CreateSessionRequest())) -> Dict[str, Any]:
     sid = safe_session_id(req.session_id or DEFAULT_SESSION_ID)
     sdir = ensure_session_state(sid, reset=req.reset)
-    return {"success": True, "session_id": sid, "session_dir": str(sdir), "reset": req.reset, "files": sorted(p.name for p in sdir.iterdir()), "next": {"turn_contract": f"/api/v1/sessions/{sid}/turn-contract", "turn_result": f"/api/v1/sessions/{sid}/turn-result"}}
+    return {"success": True, "session_id": sid, "session_dir": str(sdir), "reset": req.reset, "files": sorted(p.name for p in sdir.iterdir()), "next": {"turn": f"/api/v1/sessions/{sid}/turn", "turn_contract": f"/api/v1/sessions/{sid}/turn-contract", "turn_result": f"/api/v1/sessions/{sid}/turn-result"}}
 
 
 @app.post("/api/v1/turn/context")
