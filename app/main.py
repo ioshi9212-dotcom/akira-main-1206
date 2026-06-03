@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,7 +16,7 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SESSION_ID = os.getenv("DEFAULT_SESSION_ID", "main-1206-default")
 DEFAULT_PUBLIC_BASE_URL = "https://akira-main-1206-production-c042.up.railway.app"
 START_SCENE_FILE = "data/scenes/start_scene.md"
-MAX_FILE_CHARS = int(os.getenv("MAX_FILE_CHARS", "18000"))
+MAX_FILE_CHARS = int(os.getenv("MAX_FILE_CHARS", "6500"))
 START_COMMANDS = {"начнем", "начнём", "начинай", "старт", "start", "begin"}
 
 STATE_FILES = [
@@ -39,10 +40,6 @@ BASE_CONTEXT_FILES = [
     "state/story_lines.json",
     "state/relationships.json",
     "state/knowledge_state.json",
-    "state/reputation_state.json",
-    "state/rumors_state.json",
-    "state/inventory_state.json",
-    "state/power_state.json",
     "characters/character_id_index.md",
 ]
 
@@ -76,6 +73,11 @@ KNOWLEDGE_PATHS = {
     "miki": "knowledge/characters/miki_knowledge.md",
 }
 
+BEHAVIOR_PROFILES = {
+    "akira_version_1_cold": "characters/variants/akira_version_1_cold.md",
+    "akira_version_2_chaotic_mask": "characters/variants/akira_version_2_chaotic_mask.md",
+}
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -107,8 +109,8 @@ PUBLIC_BASE_URL = normalize_base_url(os.getenv("PUBLIC_BASE_URL")) or normalize_
 
 app = FastAPI(
     title="Akira Main 1206 API",
-    version="1.5.2",
-    description="Railway API for Akira Main 1206 with dense turn context and scene output contract.",
+    version="1.5.4",
+    description="Railway API for Akira Main 1206 with compact day-scoped turn context.",
 )
 
 
@@ -118,7 +120,7 @@ class CreateSessionRequest(BaseModel):
 
 
 class TurnContractRequest(BaseModel):
-    user_input: str = Field(..., description="User message, player action, or technical request.")
+    user_input: str = Field(...)
     mode: Literal["play", "technical", "audit", "transfer"] = "play"
     include_file_contents: bool = True
     client_context: Optional[Dict[str, Any]] = None
@@ -236,10 +238,40 @@ def read_project_file(path: str, session_id: str = DEFAULT_SESSION_ID) -> str:
     return read_text(repo_path(safe))
 
 
-def trimmed(text: str) -> Dict[str, Any]:
-    if len(text) <= MAX_FILE_CHARS:
+def trim_text(text: str, limit: Optional[int] = None) -> Dict[str, Any]:
+    max_chars = limit or MAX_FILE_CHARS
+    if len(text) <= max_chars:
         return {"content": text, "truncated": False, "chars": len(text)}
-    return {"content": text[:MAX_FILE_CHARS], "truncated": True, "chars": len(text)}
+    return {"content": text[:max_chars], "truncated": True, "chars": len(text)}
+
+
+def slice_calendar_text(text: str, current_date: str) -> str:
+    if not text or not current_date:
+        return text
+    header = f"# {current_date}"
+    date_start = text.find(header)
+    if date_start == -1:
+        return text[:MAX_FILE_CHARS]
+
+    head = text[:date_start].strip()
+    next_date = re.search(r"\n# 1206-\d{2}-\d{2}", text[date_start + 1:])
+    date_end = date_start + 1 + next_date.start() if next_date else len(text)
+    current_block = text[date_start:date_end].strip()
+
+    common = ""
+    common_start = text.find("# Общие запреты календаря")
+    if common_start != -1:
+        common_end = text.find("## Связанные файлы", common_start)
+        common = text[common_start: common_end if common_end != -1 else len(text)].strip()
+
+    return "\n\n---\n\n".join(part for part in [head, current_block, common] if part)
+
+
+def contract_file_text(path: str, state: Dict[str, Any], session_id: str) -> str:
+    text = read_project_file(path, session_id)
+    if path == "calendar/story_calendar.md":
+        return slice_calendar_text(text, str(state.get("date") or ""))
+    return text
 
 
 def extract_first_text_block(markdown: str) -> str:
@@ -271,6 +303,23 @@ def normalized_text(text: str) -> str:
 
 def is_start_command(text: str) -> bool:
     return normalized_text(text) in {cmd.replace("ё", "е") for cmd in START_COMMANDS}
+
+
+def detect_behavior_profile(user_input: str) -> Optional[str]:
+    text = normalized_text(user_input)
+    if "акира версия 2" in text or "акира-2" in text or "версия 2" in text or "вторую версию акиры" in text:
+        return "akira_version_2_chaotic_mask"
+    if "акира версия 1" in text or "акира-1" in text or "версия 1" in text or "первую версию акиры" in text:
+        return "akira_version_1_cold"
+    return None
+
+
+def selected_behavior_profile(user_input: str, state: Dict[str, Any]) -> Optional[str]:
+    detected = detect_behavior_profile(user_input)
+    if detected:
+        return detected
+    current = state.get("current_behavior_profile") or state.get("akira_behavior_profile")
+    return current if isinstance(current, str) and current in BEHAVIOR_PROFILES else None
 
 
 def default_current_state() -> Dict[str, Any]:
@@ -338,11 +387,11 @@ def classify_mode(req: TurnContractRequest) -> str:
     return "technical" if any(marker in text for marker in markers) else "play"
 
 
-def build_file_list(state: Dict[str, Any], mode: str, session_id: str) -> List[str]:
+def build_file_list(state: Dict[str, Any], mode: str, session_id: str, user_input: str = "") -> List[str]:
     files: List[str] = list(BASE_CONTEXT_FILES)
-
     scene_id = state.get("scene_id", "start_scene")
     started = bool(state.get("game_started") or state.get("first_scene_delivered"))
+
     if mode == "play" and scene_id == "start_scene" and started:
         files.extend([START_SCENE_FILE, "data/scenes/start_scene_logic.md"])
 
@@ -356,6 +405,9 @@ def build_file_list(state: Dict[str, Any], mode: str, session_id: str) -> List[s
             knowledge = KNOWLEDGE_PATHS.get(str(character_id))
             if knowledge:
                 files.append(knowledge)
+        profile = selected_behavior_profile(user_input, state)
+        if profile:
+            files.append(BEHAVIOR_PROFILES[profile])
 
     return [path for path in dict.fromkeys(files) if file_exists_for_context(path, session_id)]
 
@@ -373,11 +425,7 @@ def get_turn_counts(session_id: str, state: Dict[str, Any]) -> Dict[str, int]:
 
 def scene_output_contract(started: bool, response_mode: str) -> Dict[str, Any]:
     if response_mode == "emit_initial_scene_text_verbatim":
-        return {
-            "mode": "initial_exact_text",
-            "must_output_only_initial_scene_text": True,
-            "do_not_add_header_or_options": True,
-        }
+        return {"mode": "initial_exact_text", "must_output_only_initial_scene_text": True, "do_not_add_header_or_options": True}
     return {
         "mode": "generated_scene",
         "mandatory_source_file": "gpt/scene_format.md",
@@ -385,14 +433,16 @@ def scene_output_contract(started: bool, response_mode: str) -> Dict[str, Any]:
         "must_start_with_scene_header": True,
         "must_not_start_with_technical_comment": True,
         "must_not_write_json_to_user": True,
-        "must_not_write_for_akira": True,
+        "one_short_akira_micro_reply_allowed_if_dialogue_needs_it": True,
+        "do_not_play_full_dialogue_for_akira": True,
         "must_check_npc_knowledge_before_each_line": True,
         "stop_on_direct_question_to_akira": True,
         "keep_to_player_action_scale": True,
+        "describe_visible_audible_and_npc_actions": True,
         "avoid_poetic_water": True,
         "avoid_romantic_trauma_drama": True,
         "post_start_scene": started,
-        "allowed_after_scene_options": "Only short possible actions, no ready-made Akira replies, no thoughts of Akira.",
+        "bottom_block_format": "Use old format: Что можно сделать / Что Акира могла бы сказать / Мысли Акиры. Separators on separate lines.",
     }
 
 
@@ -403,6 +453,13 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
     start_requested = is_start_command(req.user_input)
     scene_id = state.get("scene_id", "start_scene")
     started = bool(state.get("game_started") or state.get("first_scene_delivered"))
+
+    profile = selected_behavior_profile(req.user_input, state)
+    if profile and state.get("current_behavior_profile") != profile:
+        state["current_behavior_profile"] = profile
+        state["current_behavior_profile_file"] = BEHAVIOR_PROFILES[profile]
+        state["updated_at"] = utc_now()
+        write_json_atomic(runtime_state_path(session_id, "current_state.json"), state)
 
     initial_text = ""
     response_mode = "generate_next_scene_from_contract"
@@ -416,9 +473,9 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
             response_mode = "await_start_command"
             can_generate = False
 
-    files = build_file_list(state, mode, session_id)
+    files = build_file_list(state, mode, session_id, req.user_input)
     counts = get_turn_counts(session_id, state)
-    contents = {path: trimmed(read_project_file(path, session_id)) for path in files} if req.include_file_contents else {}
+    contents = {path: trim_text(contract_file_text(path, state, session_id)) for path in files} if req.include_file_contents else {}
 
     return {
         "success": True,
@@ -439,7 +496,10 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
             "nearby_characters": state.get("nearby_characters", []),
             "conditional_characters": state.get("conditional_characters", []),
         },
-        "calendar_window": {"file": "calendar/story_calendar.md", "event_id": scene_id, "next_required_event": "raiden_motorcycle_arrival" if scene_id == "start_scene" else None},
+        "calendar_window": {"file": "calendar/story_calendar.md", "current_date_only": True, "date": state.get("date"), "event_id": scene_id, "next_required_event": "raiden_motorcycle_arrival" if scene_id == "start_scene" else None},
+        "calendar_loading_contract": {"active_context_is_current_date_only": True, "future_dates_only_for_timeskip": True, "do_not_use_past_day_goals_after_date_passed": True},
+        "akira_behavior_profile": profile,
+        "akira_behavior_profile_file": BEHAVIOR_PROFILES.get(profile) if profile else None,
         "required_files": files,
         "required_file_contents": contents,
         "scene_output_contract": scene_output_contract(started, response_mode),
@@ -448,14 +508,15 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
         "should_compact": mode == "play" and started and counts["since_last_compaction"] >= counts["compact_every_turns"],
         "checks": [
             "Apply scene_output_contract before writing user-visible scene.",
-            "Use gpt/scene_format.md as mandatory output format.",
+            "Use calendar only for the current date unless timeskipping.",
             "Use required_file_contents before character behavior.",
+            "If akira_behavior_profile_file is present, use it for Akira's behavior style.",
             "Check character knowledge before each NPC line.",
-            "Do not write player decisions, emotions, or replies for Akira.",
+            "One short Akira micro-reply is allowed only if needed; do not play a full dialogue for her.",
             "Stop on direct question to Akira.",
             "After scene output, call submitTurnResult or applyTurnResult.",
         ],
-        "message": "Turn context ready. Required state, active character cards, character knowledge and scene output contract are included.",
+        "message": "Turn context ready. Compact current-date calendar, active character cards, knowledge and scene contract included.",
     }
 
 
@@ -545,7 +606,7 @@ def session_parameter() -> Dict[str, Any]:
 def actions_schema_json() -> Dict[str, Any]:
     return {
         "openapi": "3.1.0",
-        "info": {"title": "Akira Main 1206 API", "version": "1.5.2"},
+        "info": {"title": "Akira Main 1206 API", "version": "1.5.4"},
         "servers": [{"url": PUBLIC_BASE_URL}],
         "paths": {
             "/health": {"get": {"operationId": "healthCheck", "summary": "Check API health", "responses": {"200": {"description": "API is running"}}}},
@@ -563,7 +624,7 @@ def actions_schema_json() -> Dict[str, Any]:
 
 @app.get("/")
 def root() -> Dict[str, Any]:
-    return {"status": "ok", "service": "Akira Main 1206 API", "version": "1.5.2", "actions_schema_json": "/openapi-actions.json"}
+    return {"status": "ok", "service": "Akira Main 1206 API", "version": "1.5.4", "actions_schema_json": "/openapi-actions.json"}
 
 
 @app.get("/health")
@@ -636,7 +697,7 @@ def read_file_endpoint(file_path: str, session_id: str = DEFAULT_SESSION_ID) -> 
     text = read_project_file(path, session_id)
     if not text:
         raise HTTPException(status_code=404, detail="File not found or empty")
-    return {"path": path, **trimmed(text)}
+    return {"path": path, **trim_text(text)}
 
 
 @app.get("/openapi-actions.yaml", response_class=PlainTextResponse)
