@@ -16,7 +16,7 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SESSION_ID = os.getenv("DEFAULT_SESSION_ID", "main-1206-default")
 DEFAULT_PUBLIC_BASE_URL = "https://akira-main-1206-production-c042.up.railway.app"
 START_SCENE_FILE = "data/scenes/start_scene.md"
-MAX_FILE_CHARS = int(os.getenv("MAX_FILE_CHARS", "3500"))
+MAX_FILE_CHARS = int(os.getenv("MAX_FILE_CHARS", "1200"))
 START_COMMANDS = {"начнем", "начнём", "начинай", "старт", "start", "begin"}
 
 STATE_FILES = [
@@ -31,16 +31,12 @@ STATE_FILES = [
 ]
 
 BASE_CONTEXT_FILES = [
-    "gpt/engine_prompt.md",
-    "gpt/context_loading_policy.md",
     "gpt/scene_format.md",
-    "canon/scene_is_not_simulator.md",
     "calendar/story_calendar.md",
     "state/current_state.json",
     "state/story_lines.json",
     "state/relationships.json",
     "state/knowledge_state.json",
-    "characters/character_id_index.md",
 ]
 
 CHARACTER_PATHS = {
@@ -84,7 +80,7 @@ def utc_now() -> str:
 
 
 def running_on_railway() -> bool:
-    return any(os.getenv(key) for key in ("RAILWAY_ENVIRONMENT", "RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID"))
+    return any(os.getenv(k) for k in ("RAILWAY_ENVIRONMENT", "RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID"))
 
 
 def resolve_data_dir() -> Path:
@@ -98,9 +94,7 @@ def normalize_base_url(value: Optional[str]) -> str:
     value = value.strip().rstrip("/")
     if not value:
         return ""
-    if value.startswith(("http://", "https://")):
-        return value
-    return f"https://{value}"
+    return value if value.startswith(("http://", "https://")) else f"https://{value}"
 
 
 DATA_DIR = resolve_data_dir()
@@ -109,8 +103,8 @@ PUBLIC_BASE_URL = normalize_base_url(os.getenv("PUBLIC_BASE_URL")) or normalize_
 
 app = FastAPI(
     title="Akira Main 1206 API",
-    version="1.5.5",
-    description="Railway API for Akira Main 1206 with compact turn context and exact first scene through processTurn.",
+    version="1.5.6",
+    description="Compact runtime API for Akira Main 1206. Exact first scene uses processTurn; post-start processTurn returns compact contract.",
 )
 
 
@@ -129,6 +123,7 @@ class TurnContractRequest(BaseModel):
 class ProcessTurnRequest(BaseModel):
     player_input: str = Field(...)
     mode: Literal["play", "technical", "audit", "transfer"] = "play"
+    include_file_contents: bool = True
     state_patches: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -182,11 +177,9 @@ def read_text(path: Path, default: str = "") -> str:
 
 
 def read_json(path: Path, default: Any) -> Any:
-    text = read_text(path)
-    if not text:
-        return default
     try:
-        return json.loads(text)
+        text = read_text(path)
+        return json.loads(text) if text else default
     except json.JSONDecodeError:
         return default
 
@@ -245,26 +238,24 @@ def trim_text(text: str, limit: Optional[int] = None) -> Dict[str, Any]:
     return {"content": text[:max_chars], "truncated": True, "chars": len(text)}
 
 
+def extract_section(text: str, marker: str, next_markers: List[str]) -> str:
+    start = text.find(marker)
+    if start == -1:
+        return ""
+    end_candidates = [text.find(m, start + len(marker)) for m in next_markers]
+    end_candidates = [x for x in end_candidates if x != -1]
+    end = min(end_candidates) if end_candidates else len(text)
+    return text[start:end].strip()
+
+
 def slice_calendar_text(text: str, current_date: str) -> str:
     if not text or not current_date:
-        return text
-    header = f"# {current_date}"
-    date_start = text.find(header)
-    if date_start == -1:
         return text[:MAX_FILE_CHARS]
-
-    head = text[:date_start].strip()
-    next_date = re.search(r"\n# 1206-\d{2}-\d{2}", text[date_start + 1:])
-    date_end = date_start + 1 + next_date.start() if next_date else len(text)
-    current_block = text[date_start:date_end].strip()
-
-    common = ""
-    common_start = text.find("# Общие запреты календаря")
-    if common_start != -1:
-        common_end = text.find("## Связанные файлы", common_start)
-        common = text[common_start: common_end if common_end != -1 else len(text)].strip()
-
-    return "\n\n---\n\n".join(part for part in [head, current_block, common] if part)
+    date_block = extract_section(text, f"# {current_date}", ["\n# 1206-", "\n# Общие запреты календаря"])
+    if not date_block:
+        return text[:MAX_FILE_CHARS]
+    common = extract_section(text, "# Общие запреты календаря", ["\n## Правила таймскипа", "\n## Связанные файлы"])
+    return "\n\n---\n\n".join(part for part in [date_block, common] if part)
 
 
 def contract_file_text(path: str, state: Dict[str, Any], session_id: str) -> str:
@@ -379,10 +370,10 @@ def story_lines(session_id: str = DEFAULT_SESSION_ID) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def classify_mode(req: TurnContractRequest) -> str:
-    if req.mode != "play":
-        return req.mode
-    text = normalized_text(req.user_input)
+def classify_mode(user_input: str, explicit_mode: str = "play") -> str:
+    if explicit_mode != "play":
+        return explicit_mode
+    text = normalized_text(user_input)
     markers = ["github", "railway", "volume", "волум", "api", "openapi", "deploy", "деплой", "schema", "схема", "техничес", "не продолжай сцену", "репозитор", "почини"]
     return "technical" if any(marker in text for marker in markers) else "play"
 
@@ -428,8 +419,6 @@ def scene_output_contract(started: bool, response_mode: str) -> Dict[str, Any]:
         return {"mode": "call_processTurn", "must_call_processTurn_for_first_scene": True, "do_not_generate_scene_from_turn_contract": True}
     return {
         "mode": "generated_scene",
-        "mandatory_source_file": "gpt/scene_format.md",
-        "format_is_mandatory": True,
         "must_start_with_scene_header": True,
         "must_not_start_with_technical_comment": True,
         "must_not_write_json_to_user": True,
@@ -441,14 +430,30 @@ def scene_output_contract(started: bool, response_mode: str) -> Dict[str, Any]:
         "describe_visible_audible_and_npc_actions": True,
         "avoid_poetic_water": True,
         "avoid_romantic_trauma_drama": True,
+        "bottom_block_format": "Что можно сделать / Что Акира могла бы сказать / Мысли Акиры. Separators on separate lines.",
+        "if_action_api_error": "Do not generate a scene. Tell user only that API contract failed.",
         "post_start_scene": started,
-        "bottom_block_format": "Use old format: Что можно сделать / Что Акира могла бы сказать / Мысли Акиры. Separators on separate lines.",
+    }
+
+
+def runtime_brief(state: Dict[str, Any], profile: Optional[str]) -> Dict[str, Any]:
+    return {
+        "format": "Start immediately with header. No comments before scene. Use old bottom block with separate divider lines.",
+        "description_mode": "Show what Akira sees/hears and what NPCs do. No poetic internal drama.",
+        "time": "Move time when action takes minutes; listening at door usually +1-3 minutes.",
+        "akira_control": "One short micro-reply allowed only if dialogue needs it; never play a full dialogue or decision for Akira.",
+        "jun_aug31_goal": "Jun hides that Akira is there, says nothing extra to white-haired strangers, protects her, buys time, wants her alive and able to reach East Sector.",
+        "emma_start_knowledge": "Emma does not know Akira personally and must not know the Ray/East Sector note unless she sees/hears it.",
+        "irey_start_knowledge": "Irey knows Akira from Samuel period, but does not know Jun personally and does not know Akira has amnesia at start.",
+        "raiden_lock": "Raiden is not active until the 03:02 window or a valid trigger.",
+        "akira_behavior_profile": profile,
+        "current_scene": {"date": state.get("date"), "time": state.get("time"), "scene_id": state.get("scene_id"), "location": state.get("location")},
     }
 
 
 def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, Any]:
     ensure_session_state(session_id)
-    mode = classify_mode(req)
+    mode = classify_mode(req.user_input, req.mode)
     state = current_state(session_id)
     start_requested = is_start_command(req.user_input)
     scene_id = state.get("scene_id", "start_scene")
@@ -461,16 +466,11 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
         state["updated_at"] = utc_now()
         write_json_atomic(runtime_state_path(session_id, "current_state.json"), state)
 
-    initial_text = ""
     response_mode = "generate_next_scene_from_contract"
     can_generate = mode == "play"
     if mode == "play" and scene_id == "start_scene" and not started:
-        if start_requested:
-            response_mode = "call_processTurn_for_initial_scene"
-            can_generate = False
-        else:
-            response_mode = "await_start_command"
-            can_generate = False
+        response_mode = "call_processTurn_for_initial_scene" if start_requested else "await_start_command"
+        can_generate = False
 
     files = build_file_list(state, mode, session_id, req.user_input)
     counts = get_turn_counts(session_id, state)
@@ -485,7 +485,7 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
         "can_generate_scene": can_generate,
         "response_mode": response_mode,
         "must_output_initial_scene_text": False,
-        "initial_scene_text": initial_text,
+        "initial_scene_text": "",
         "current_scene_anchor": {
             "date": state.get("date"),
             "time": state.get("time"),
@@ -495,6 +495,7 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
             "nearby_characters": state.get("nearby_characters", []),
             "conditional_characters": state.get("conditional_characters", []),
         },
+        "runtime_brief": runtime_brief(state, profile),
         "calendar_window": {"file": "calendar/story_calendar.md", "current_date_only": True, "date": state.get("date"), "event_id": scene_id, "next_required_event": "raiden_motorcycle_arrival" if scene_id == "start_scene" else None},
         "calendar_loading_contract": {"active_context_is_current_date_only": True, "future_dates_only_for_timeskip": True, "do_not_use_past_day_goals_after_date_passed": True},
         "akira_behavior_profile": profile,
@@ -506,17 +507,17 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
         "compact_every": counts["compact_every_turns"],
         "should_compact": mode == "play" and started and counts["since_last_compaction"] >= counts["compact_every_turns"],
         "checks": [
+            "If API/Action call failed, do not generate scene from memory.",
             "For first scene, use processTurn. Do not generate initial scene from turn-contract.",
-            "Apply scene_output_contract before writing user-visible scene.",
-            "Use calendar only for the current date unless timeskipping.",
-            "Use required_file_contents before character behavior.",
-            "If akira_behavior_profile_file is present, use it for Akira's behavior style.",
+            "Start generated scene with header only, no technical comment.",
+            "Use calendar only for current date unless timeskipping.",
+            "Use runtime_brief and required_file_contents before character behavior.",
             "Check character knowledge before each NPC line.",
             "One short Akira micro-reply is allowed only if needed; do not play a full dialogue for her.",
             "Stop on direct question to Akira.",
             "After generated scene output, call submitTurnResult or applyTurnResult.",
         ],
-        "message": "Turn context ready. First scene must be requested through processTurn; post-start context excludes full start_scene.md.",
+        "message": "Compact turn context ready. If this contract is not received by the model, scene generation is forbidden.",
     }
 
 
@@ -588,7 +589,7 @@ def request_schema() -> Dict[str, Any]:
 
 
 def process_turn_schema() -> Dict[str, Any]:
-    return object_schema({"player_input": {"type": "string"}, "mode": {"type": "string", "enum": ["play", "technical", "audit", "transfer"], "default": "play"}, "state_patches": {"type": "object"}}, ["player_input"])
+    return object_schema({"player_input": {"type": "string"}, "mode": {"type": "string", "enum": ["play", "technical", "audit", "transfer"], "default": "play"}, "include_file_contents": {"type": "boolean", "default": True}, "state_patches": {"type": "object"}}, ["player_input"])
 
 
 def result_schema() -> Dict[str, Any]:
@@ -606,15 +607,15 @@ def session_parameter() -> Dict[str, Any]:
 def actions_schema_json() -> Dict[str, Any]:
     return {
         "openapi": "3.1.0",
-        "info": {"title": "Akira Main 1206 API", "version": "1.5.5"},
+        "info": {"title": "Akira Main 1206 API", "version": "1.5.6"},
         "servers": [{"url": PUBLIC_BASE_URL}],
         "paths": {
             "/health": {"get": {"operationId": "healthCheck", "summary": "Check API health", "responses": {"200": {"description": "API is running"}}}},
             "/debug/volume": {"get": {"operationId": "debugVolume", "summary": "Check Railway volume", "responses": {"200": {"description": "Volume status"}}}},
             "/api/v1/sessions": {"post": {"operationId": "createSession", "summary": "Create or initialize session", "requestBody": json_body(object_schema({"session_id": {"type": "string"}, "reset": {"type": "boolean", "default": False}}), required=False), "responses": {"200": {"description": "Session initialized"}}}},
             "/api/v1/turn/context": {"post": {"operationId": "getDefaultTurnContext", "summary": "Get default turn context", "requestBody": json_body(request_schema()), "responses": {"200": {"description": "Turn context"}}}},
-            "/api/v1/sessions/{session_id}/turn": {"post": {"operationId": "processTurn", "summary": "Process first exact scene turn", "parameters": [session_parameter()], "requestBody": json_body(process_turn_schema()), "responses": {"200": {"description": "Turn processed"}}}},
-            "/api/v1/sessions/{session_id}/turn-contract": {"post": {"operationId": "getTurnContract", "summary": "Get turn context before scene generation", "parameters": [session_parameter()], "requestBody": json_body(request_schema()), "responses": {"200": {"description": "Turn context"}}}},
+            "/api/v1/sessions/{session_id}/turn": {"post": {"operationId": "processTurn", "summary": "Process first exact scene turn; after start returns compact turn contract", "parameters": [session_parameter()], "requestBody": json_body(process_turn_schema()), "responses": {"200": {"description": "Turn processed or compact contract returned"}}}},
+            "/api/v1/sessions/{session_id}/turn-contract": {"post": {"operationId": "getTurnContract", "summary": "Get compact turn context before scene generation", "parameters": [session_parameter()], "requestBody": json_body(request_schema()), "responses": {"200": {"description": "Turn context"}}}},
             "/api/v1/sessions/{session_id}/turn-result": {"post": {"operationId": "submitTurnResult", "summary": "Save generated scene", "parameters": [session_parameter()], "requestBody": json_body(result_schema()), "responses": {"200": {"description": "Turn saved"}}}},
             "/api/v1/sessions/{session_id}/apply-turn-result": {"post": {"operationId": "applyTurnResult", "summary": "Compatibility save endpoint", "parameters": [session_parameter()], "requestBody": json_body(result_schema()), "responses": {"200": {"description": "Turn saved"}}}},
             "/api/v1/files/{file_path}": {"get": {"operationId": "readProjectFile", "summary": "Read repository or runtime file", "parameters": [{"name": "file_path", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "File content"}}}},
@@ -624,7 +625,7 @@ def actions_schema_json() -> Dict[str, Any]:
 
 @app.get("/")
 def root() -> Dict[str, Any]:
-    return {"status": "ok", "service": "Akira Main 1206 API", "version": "1.5.5", "actions_schema_json": "/openapi-actions.json"}
+    return {"status": "ok", "service": "Akira Main 1206 API", "version": "1.5.6", "actions_schema_json": "/openapi-actions.json"}
 
 
 @app.get("/health")
@@ -654,7 +655,7 @@ def default_turn_context(req: TurnContractRequest) -> Dict[str, Any]:
 
 @app.post("/api/v1/sessions/{session_id}/turn")
 def process_turn(session_id: str, req: ProcessTurnRequest) -> Dict[str, Any]:
-    mode = classify_mode(TurnContractRequest(user_input=req.player_input, mode=req.mode))
+    mode = classify_mode(req.player_input, req.mode)
     sid = safe_session_id(session_id)
     state = current_state(sid)
     scene_id = state.get("scene_id", "start_scene")
@@ -673,7 +674,11 @@ def process_turn(session_id: str, req: ProcessTurnRequest) -> Dict[str, Any]:
         save_turn_result(sid, TurnResultRequest(scene_id="start_scene", scene_text=scene_text, technical=False, state_patches=req.state_patches))
         return {"session_id": sid, "player_input": req.player_input, "current_scene_id": "start_scene", "status": "START_SCENE_EXACT_TEXT", "scene_text": scene_text}
 
-    return {"session_id": sid, "player_input": req.player_input, "current_scene_id": scene_id, "status": "USE_TURN_CONTRACT", "scene_text": ""}
+    contract = build_turn_contract(
+        sid,
+        TurnContractRequest(user_input=req.player_input, mode="play", include_file_contents=req.include_file_contents),
+    )
+    return {"session_id": sid, "player_input": req.player_input, "current_scene_id": scene_id, "status": "TURN_CONTRACT_RETURNED", "turn_contract": contract, "scene_text": ""}
 
 
 @app.post("/api/v1/sessions/{session_id}/turn-contract")
