@@ -18,6 +18,68 @@ START_SCENE_FILE = "data/scenes/start_scene.md"
 MAX_FILE_CHARS = int(os.getenv("MAX_FILE_CHARS", "18000"))
 START_COMMANDS = {"начнем", "начнём", "начинай", "старт", "start", "begin"}
 
+STATE_FILES = [
+    "current_state.json",
+    "story_lines.json",
+    "relationships.json",
+    "knowledge_state.json",
+    "reputation_state.json",
+    "rumors_state.json",
+    "inventory_state.json",
+    "power_state.json",
+]
+
+BASE_CONTEXT_FILES = [
+    "gpt/engine_prompt.md",
+    "gpt/context_loading_policy.md",
+    "gpt/scene_format.md",
+    "canon/scene_is_not_simulator.md",
+    "calendar/story_calendar.md",
+    "state/current_state.json",
+    "state/story_lines.json",
+    "state/relationships.json",
+    "state/knowledge_state.json",
+    "state/reputation_state.json",
+    "state/rumors_state.json",
+    "state/inventory_state.json",
+    "state/power_state.json",
+    "characters/character_id_index.md",
+]
+
+CHARACTER_PATHS = {
+    "akira": "characters/main/akira_akatsumi.md",
+    "akira_akatsumi": "characters/main/akira_akatsumi.md",
+    "jun_carter": "characters/main/jun_carter.md",
+    "irey": "characters/main/irey.md",
+    "emma": "characters/main/emma.md",
+    "raiden_sterling": "characters/main/raiden_sterling_final.md",
+    "raiden": "characters/main/raiden_sterling_final.md",
+    "ray_carter": "characters/main/ray_carter.md",
+    "haru_foster": "characters/main/haru_foster.md",
+    "miki_larsen": "characters/main/miki_larsen.md",
+    "miki": "characters/main/miki_larsen.md",
+    "alex": "characters/main/alex.md",
+    "yuna": "characters/main/yuna.md",
+    "samuel_sterling": "characters/main/samuel_sterling.md",
+}
+
+KNOWLEDGE_PATHS = {
+    "akira": "knowledge/characters/akira_knowledge.md",
+    "akira_akatsumi": "knowledge/characters/akira_knowledge.md",
+    "jun_carter": "knowledge/characters/jun_carter_knowledge.md",
+    "irey": "knowledge/characters/irey_knowledge.md",
+    "emma": "knowledge/characters/emma_knowledge.md",
+    "raiden_sterling": "knowledge/characters/raiden_sterling_knowledge.md",
+    "raiden": "knowledge/characters/raiden_sterling_knowledge.md",
+    "yuna": "knowledge/characters/yuna_knowledge.md",
+    "miki_larsen": "knowledge/characters/miki_knowledge.md",
+    "miki": "knowledge/characters/miki_knowledge.md",
+}
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 def running_on_railway() -> bool:
     return any(os.getenv(key) for key in ("RAILWAY_ENVIRONMENT", "RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID"))
@@ -45,25 +107,25 @@ PUBLIC_BASE_URL = normalize_base_url(os.getenv("PUBLIC_BASE_URL")) or normalize_
 
 app = FastAPI(
     title="Akira Main 1206 API",
-    version="1.4.0",
-    description="Railway API for Akira Main 1206: exact start scene output, turn contracts and state saving.",
+    version="1.5.0",
+    description="Railway API for Akira Main 1206 with dense turn context and state saving.",
 )
 
 
 class CreateSessionRequest(BaseModel):
-    session_id: Optional[str] = Field(default=None, description="Optional session id. Defaults to DEFAULT_SESSION_ID.")
-    reset: bool = Field(default=False, description="Reset starter runtime files from repository defaults.")
+    session_id: Optional[str] = None
+    reset: bool = False
 
 
 class TurnContractRequest(BaseModel):
     user_input: str = Field(..., description="User message, player action, or technical request.")
     mode: Literal["play", "technical", "audit", "transfer"] = "play"
-    include_file_contents: bool = False
+    include_file_contents: bool = True
     client_context: Optional[Dict[str, Any]] = None
 
 
 class ProcessTurnRequest(BaseModel):
-    player_input: str = Field(..., description="Player input. Use this for engine-style first turn exact scene output.")
+    player_input: str = Field(...)
     mode: Literal["play", "technical", "audit", "transfer"] = "play"
     state_patches: Dict[str, Any] = Field(default_factory=dict)
 
@@ -90,10 +152,6 @@ class ApplyTurnResultRequest(BaseModel):
     power_changes: Dict[str, Any] = Field(default_factory=dict)
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def safe_session_id(session_id: str) -> str:
     safe = "".join(ch for ch in str(session_id or "") if ch.isalnum() or ch in "-_")
     return safe or DEFAULT_SESSION_ID
@@ -107,12 +165,12 @@ def safe_repo_path(path: str) -> str:
     return "/".join(parts)
 
 
-def ensure_dirs(session_id: str = DEFAULT_SESSION_ID) -> Path:
+def session_dir(session_id: str = DEFAULT_SESSION_ID) -> Path:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    session_dir = SESSIONS_DIR / safe_session_id(session_id)
-    session_dir.mkdir(parents=True, exist_ok=True)
-    return session_dir
+    path = SESSIONS_DIR / safe_session_id(session_id)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def read_text(path: Path, default: str = "") -> str:
@@ -154,17 +212,28 @@ def deep_merge(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
     return base
 
 
-def repo_file_exists(relative_path: str) -> bool:
-    return (APP_ROOT / relative_path).exists()
+def repo_path(path: str) -> Path:
+    return APP_ROOT / safe_repo_path(path)
 
 
-def existing_files(paths: List[str]) -> List[str]:
-    return [path for path in dict.fromkeys(paths) if repo_file_exists(path)]
+def runtime_state_path(session_id: str, filename: str) -> Path:
+    return session_dir(session_id) / filename
 
 
-def read_repo_text(relative_path: str) -> str:
-    safe = safe_repo_path(relative_path)
-    return read_text(APP_ROOT / safe)
+def file_exists_for_context(path: str, session_id: str = DEFAULT_SESSION_ID) -> bool:
+    safe = safe_repo_path(path)
+    if safe.startswith("state/") and runtime_state_path(session_id, Path(safe).name).exists():
+        return True
+    return repo_path(safe).exists()
+
+
+def read_project_file(path: str, session_id: str = DEFAULT_SESSION_ID) -> str:
+    safe = safe_repo_path(path)
+    if safe.startswith("state/"):
+        runtime = runtime_state_path(session_id, Path(safe).name)
+        if runtime.exists():
+            return read_text(runtime)
+    return read_text(repo_path(safe))
 
 
 def trimmed(text: str) -> Dict[str, Any]:
@@ -193,7 +262,7 @@ def extract_first_text_block(markdown: str) -> str:
 
 
 def get_start_scene_text() -> str:
-    return extract_first_text_block(read_repo_text(START_SCENE_FILE))
+    return extract_first_text_block(read_project_file(START_SCENE_FILE))
 
 
 def normalized_text(text: str) -> str:
@@ -201,212 +270,141 @@ def normalized_text(text: str) -> str:
 
 
 def is_start_command(text: str) -> bool:
-    norm = normalized_text(text)
-    return norm in {cmd.replace("ё", "е") for cmd in START_COMMANDS}
+    return normalized_text(text) in {cmd.replace("ё", "е") for cmd in START_COMMANDS}
 
 
 def default_current_state() -> Dict[str, Any]:
+    starter = read_json(APP_ROOT / "state/current_state.json", None)
+    if isinstance(starter, dict):
+        starter.setdefault("updated_at", utc_now())
+        return starter
     return {
         "schema": "current_state_v1",
         "project": "akira-main-1206",
         "date": "1206-08-31",
         "time": "02:40",
         "scene_id": "start_scene",
-        "current_scene_anchor": START_SCENE_FILE,
         "location": "jun_house_akira_room",
         "active_characters": ["akira", "jun_carter", "irey", "emma"],
         "nearby_characters": [],
         "conditional_characters": ["raiden_sterling"],
-        "akira_state": "резко проснулась; тело напряжено; память держит только последние два года",
         "game_started": False,
         "first_scene_delivered": False,
         "turn_counter": 0,
-        "compact_every": 15,
         "since_last_compaction": 0,
-        "last_compaction_turn": 0,
-        "last_compaction_date": None,
-        "last_compaction_note": None,
+        "compact_every": 15,
         "updated_at": utc_now(),
     }
 
 
 def default_story_lines() -> Dict[str, Any]:
-    repo_starter = read_json(APP_ROOT / "state/story_lines.json", None)
-    if isinstance(repo_starter, dict):
-        return repo_starter
-    return {
-        "schema": "story_lines_v1",
-        "project": "akira-main-1206",
-        "turn_counter": {
-            "total_game_turns": 0,
-            "since_last_compaction": 0,
-            "compact_every_turns": 15,
-            "last_compaction_turn": 0,
-            "last_compaction_date": None,
-            "last_compaction_note": None,
-            "technical_turns_do_not_count": True,
-        },
-        "next_beats": {"active": [], "resolved": []},
-        "compacted_history": [],
-    }
+    starter = read_json(APP_ROOT / "state/story_lines.json", None)
+    if isinstance(starter, dict):
+        return starter
+    return {"schema": "story_lines_v1", "project": "akira-main-1206", "turn_counter": {"total_game_turns": 0, "since_last_compaction": 0, "compact_every_turns": 15}, "next_beats": {"active": [], "resolved": []}}
 
 
-def ensure_session_state(session_id: str, reset: bool = False) -> Path:
-    sdir = ensure_dirs(session_id)
-    current_path = sdir / "current_state.json"
-    story_path = sdir / "story_lines.json"
-    if reset or not current_path.exists():
-        write_json_atomic(current_path, default_current_state())
-    if reset or not story_path.exists():
-        write_json_atomic(story_path, default_story_lines())
+def ensure_session_state(session_id: str = DEFAULT_SESSION_ID, reset: bool = False) -> Path:
+    sdir = session_dir(session_id)
+    for filename in STATE_FILES:
+        dst = sdir / filename
+        src = APP_ROOT / "state" / filename
+        if src.exists() and (reset or not dst.exists()):
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    if reset or not (sdir / "current_state.json").exists():
+        write_json_atomic(sdir / "current_state.json", default_current_state())
+    if reset or not (sdir / "story_lines.json").exists():
+        write_json_atomic(sdir / "story_lines.json", default_story_lines())
     return sdir
 
 
-def get_current_state(session_id: str) -> Dict[str, Any]:
+def current_state(session_id: str = DEFAULT_SESSION_ID) -> Dict[str, Any]:
     ensure_session_state(session_id)
-    return read_json(ensure_dirs(session_id) / "current_state.json", default_current_state())
+    state = read_json(runtime_state_path(session_id, "current_state.json"), None)
+    return state if isinstance(state, dict) else default_current_state()
 
 
-def save_current_state(session_id: str, state: Dict[str, Any]) -> None:
-    state["updated_at"] = utc_now()
-    write_json_atomic(ensure_dirs(session_id) / "current_state.json", state)
-
-
-def get_story_lines(session_id: str) -> Dict[str, Any]:
+def story_lines(session_id: str = DEFAULT_SESSION_ID) -> Dict[str, Any]:
     ensure_session_state(session_id)
-    return read_json(ensure_dirs(session_id) / "story_lines.json", default_story_lines())
-
-
-def save_story_lines(session_id: str, story_lines: Dict[str, Any]) -> None:
-    write_json_atomic(ensure_dirs(session_id) / "story_lines.json", story_lines)
-
-
-def classify_mode_text(user_input: str, explicit_mode: str = "play") -> str:
-    text = normalized_text(user_input)
-    if explicit_mode != "play":
-        return explicit_mode
-    technical_markers = [
-        "проверь", "проверяй", "репозитор", "github", "railway", "volume", "волум",
-        "schema", "openapi", "api", "endpoint", "deploy", "билд", "build", "debug",
-        "не продолжай сцену", "техничес", "перенеси", "переноси", "создай файл", "обнови файл",
-        "сверь", "сверка", "почини", "структура", "промт", "формат",
-    ]
-    if any(marker in text for marker in technical_markers):
-        return "technical"
-    return "play"
+    data = read_json(runtime_state_path(session_id, "story_lines.json"), {})
+    return data if isinstance(data, dict) else {}
 
 
 def classify_mode(req: TurnContractRequest) -> str:
-    return classify_mode_text(req.user_input, req.mode)
+    if req.mode != "play":
+        return req.mode
+    text = normalized_text(req.user_input)
+    markers = ["github", "railway", "volume", "волум", "api", "openapi", "deploy", "деплой", "schema", "схема", "техничес", "не продолжай сцену", "репозитор", "почини"]
+    return "technical" if any(marker in text for marker in markers) else "play"
 
 
-def build_required_files(state: Dict[str, Any], mode: str, start_requested: bool) -> List[str]:
-    base = [
-        "gpt/engine_prompt.md",
-        "gpt/context_loading_policy.md",
-        "gpt/scene_format.md",
-        "canon/scene_is_not_simulator.md",
-        "calendar/story_calendar.md",
-        "characters/character_id_index.md",
-    ]
-    if mode != "play":
-        return existing_files(base)
+def build_file_list(state: Dict[str, Any], mode: str, session_id: str) -> List[str]:
+    files: List[str] = list(BASE_CONTEXT_FILES)
 
     scene_id = state.get("scene_id", "start_scene")
-    game_started = bool(state.get("game_started") or state.get("first_scene_delivered"))
-    if scene_id == "start_scene" and (game_started or start_requested):
-        base.extend([START_SCENE_FILE, "data/scenes/start_scene_logic.md"])
+    started = bool(state.get("game_started") or state.get("first_scene_delivered"))
+    if mode == "play" and scene_id == "start_scene" and started:
+        files.extend([START_SCENE_FILE, "data/scenes/start_scene_logic.md"])
 
-    character_map = {
-        "akira": "characters/main/akira_akatsumi.md",
-        "jun_carter": "characters/main/jun_carter.md",
-        "irey": "characters/main/irey.md",
-        "emma": "characters/main/emma.md",
-        "raiden_sterling": "characters/main/raiden_sterling_final.md",
-        "raiden": "characters/main/raiden_sterling_final.md",
-        "ray_carter": "characters/main/ray_carter.md",
-        "haru_foster": "characters/main/haru_foster.md",
-        "miki_larsen": "characters/main/miki_larsen.md",
-        "miki": "characters/main/miki_larsen.md",
-        "alex": "characters/main/alex.md",
-        "yuna": "characters/main/yuna.md",
-        "samuel_sterling": "characters/main/samuel_sterling.md",
-    }
-    knowledge_map = {
-        "akira": "knowledge/characters/akira_knowledge.md",
-        "jun_carter": "knowledge/characters/jun_carter_knowledge.md",
-        "irey": "knowledge/characters/irey_knowledge.md",
-        "emma": "knowledge/characters/emma_knowledge.md",
-        "raiden_sterling": "knowledge/characters/raiden_sterling_knowledge.md",
-        "raiden": "knowledge/characters/raiden_sterling_knowledge.md",
-        "yuna": "knowledge/characters/yuna_knowledge.md",
-        "miki_larsen": "knowledge/characters/miki_knowledge.md",
-        "miki": "knowledge/characters/miki_knowledge.md",
-    }
+    if mode == "play":
+        active = list(state.get("active_characters") or [])
+        nearby = list(state.get("nearby_characters") or state.get("nearby_or_possible") or [])
+        for character_id in list(dict.fromkeys(active + nearby)):
+            path = CHARACTER_PATHS.get(str(character_id))
+            if path:
+                files.append(path)
+            knowledge = KNOWLEDGE_PATHS.get(str(character_id))
+            if knowledge:
+                files.append(knowledge)
 
-    active = list(state.get("active_characters") or [])
-    nearby = list(state.get("nearby_characters") or [])
-    if not start_requested and not game_started and scene_id == "start_scene":
-        active = []
-        nearby = []
-
-    for character_id in dict.fromkeys(active + nearby):
-        if character_id in character_map:
-            base.append(character_map[character_id])
-        if character_id in knowledge_map:
-            base.append(knowledge_map[character_id])
-
-    return existing_files(base)
+    return [path for path in dict.fromkeys(files) if file_exists_for_context(path, session_id)]
 
 
-def get_turn_counts(session_id: str, current_state: Dict[str, Any]) -> Dict[str, int]:
-    story_lines = get_story_lines(session_id)
-    counter = story_lines.get("turn_counter") if isinstance(story_lines, dict) else {}
+def get_turn_counts(session_id: str, state: Dict[str, Any]) -> Dict[str, int]:
+    counter = story_lines(session_id).get("turn_counter", {})
     if not isinstance(counter, dict):
         counter = {}
-    total = int(counter.get("total_game_turns", current_state.get("turn_counter", 0)) or 0)
-    since = int(counter.get("since_last_compaction", current_state.get("since_last_compaction", 0)) or 0)
-    every = int(counter.get("compact_every_turns", current_state.get("compact_every", 15)) or 15)
-    return {"total_game_turns": total, "since_last_compaction": since, "compact_every_turns": every}
+    return {
+        "total_game_turns": int(counter.get("total_game_turns", state.get("turn_counter", 0)) or 0),
+        "since_last_compaction": int(counter.get("since_last_compaction", state.get("since_last_compaction", 0)) or 0),
+        "compact_every_turns": int(counter.get("compact_every_turns", state.get("compact_every", 15)) or 15),
+    }
 
 
 def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, Any]:
     ensure_session_state(session_id)
     mode = classify_mode(req)
+    state = current_state(session_id)
     start_requested = is_start_command(req.user_input)
-    is_game_turn = mode == "play"
-    state = get_current_state(session_id)
     scene_id = state.get("scene_id", "start_scene")
-    game_started = bool(state.get("game_started") or state.get("first_scene_delivered"))
+    started = bool(state.get("game_started") or state.get("first_scene_delivered"))
 
-    first_scene_text = ""
-    must_output_initial_scene_text = False
-    can_generate_scene = is_game_turn
+    initial_text = ""
     response_mode = "generate_next_scene_from_contract"
-
-    if is_game_turn and scene_id == "start_scene" and not game_started:
+    can_generate = mode == "play"
+    if mode == "play" and scene_id == "start_scene" and not started:
         if start_requested:
-            first_scene_text = get_start_scene_text()
-            must_output_initial_scene_text = bool(first_scene_text)
-            response_mode = "emit_initial_scene_text_verbatim" if first_scene_text else "initial_scene_text_missing"
-            can_generate_scene = bool(first_scene_text)
+            initial_text = get_start_scene_text()
+            response_mode = "emit_initial_scene_text_verbatim" if initial_text else "initial_scene_text_missing"
+            can_generate = bool(initial_text)
         else:
-            can_generate_scene = False
             response_mode = "await_start_command"
+            can_generate = False
 
-    turn_counts = get_turn_counts(session_id, state)
-    should_compact = is_game_turn and game_started and turn_counts["since_last_compaction"] >= turn_counts["compact_every_turns"]
-    required_files = build_required_files(state, mode, start_requested)
+    files = build_file_list(state, mode, session_id)
+    counts = get_turn_counts(session_id, state)
+    contents = {path: trimmed(read_project_file(path, session_id)) for path in files} if req.include_file_contents else {}
 
     return {
+        "success": True,
         "session_id": safe_session_id(session_id),
         "mode": mode,
-        "is_game_turn": is_game_turn,
+        "is_game_turn": mode == "play",
         "start_requested": start_requested,
-        "can_generate_scene": can_generate_scene,
+        "can_generate_scene": can_generate,
         "response_mode": response_mode,
-        "must_output_initial_scene_text": must_output_initial_scene_text,
-        "initial_scene_text": first_scene_text,
+        "must_output_initial_scene_text": bool(initial_text),
+        "initial_scene_text": initial_text,
         "current_scene_anchor": {
             "date": state.get("date"),
             "time": state.get("time"),
@@ -416,43 +414,26 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
             "nearby_characters": state.get("nearby_characters", []),
             "conditional_characters": state.get("conditional_characters", []),
         },
-        "calendar_window": {
-            "file": "calendar/story_calendar.md",
-            "event_id": scene_id,
-            "next_required_event": "raiden_motorcycle_arrival" if scene_id == "start_scene" else None,
-        },
-        "required_files": required_files,
-        "required_file_contents": {path: trimmed(read_repo_text(path)) for path in required_files} if req.include_file_contents else {},
-        "optional_files": [],
-        "forbidden_files_or_topics": [
-            "do_not_load_inactive_future_characters",
-            "do_not_use_hidden_lore_as_npc_knowledge",
-            "do_not_simulate_empty_steps",
-            "do_not_emit_initial_scene_before_start_command",
-        ],
-        "topic_triggers": ["start_scene", "calendar", "scene_format"],
-        "relationship_pairs_needed": [],
-        "turn_counter": turn_counts,
-        "compact_every": turn_counts["compact_every_turns"],
-        "should_compact": should_compact,
+        "calendar_window": {"file": "calendar/story_calendar.md", "event_id": scene_id, "next_required_event": "raiden_motorcycle_arrival" if scene_id == "start_scene" else None},
+        "required_files": files,
+        "required_file_contents": contents,
+        "turn_counter": counts,
+        "compact_every": counts["compact_every_turns"],
+        "should_compact": mode == "play" and started and counts["since_last_compaction"] >= counts["compact_every_turns"],
         "checks": [
-            "emit_initial_scene_text_only_if_user_input_is_start_command",
-            "if_response_mode_await_start_command_do_not_generate_scene",
-            "if_must_output_initial_scene_text_true_emit_initial_scene_text_verbatim",
-            "do_not_reveal_unknown_names",
-            "do_not_introduce_echo_before_calendar_condition",
-            "do_not_make_raiden_active_before_condition",
-            "do_not_advance_time_for_technical_turn",
-            "story_not_simulator_or_sandbox",
-            "after_scene_call_submitTurnResult_or_applyTurnResult_but_do_not_report_save_status_to_user_unless_user_asks",
+            "Use required_file_contents before character behavior.",
+            "Check character knowledge before each NPC line.",
+            "Do not write player decisions, emotions, or replies for Akira.",
+            "Stop on direct question to Akira.",
+            "After scene output, call submitTurnResult or applyTurnResult.",
         ],
-        "message": "Turn contract ready. For first start prefer processTurn; for continuations use required_files and then submitTurnResult/applyTurnResult.",
+        "message": "Turn context ready. Required state, active character cards and character knowledge are included when files exist.",
     }
 
 
 def normalize_state_patches(req: TurnResultRequest | ApplyTurnResultRequest) -> Dict[str, Any]:
     patches = dict(getattr(req, "state_patches", {}) or {})
-    compatibility_pairs = {
+    pairs = {
         "current_state_patch": getattr(req, "current_state_changes", None),
         "story_line_patches": getattr(req, "story_lines_changes", None),
         "relationship_patches": getattr(req, "relationship_changes", None),
@@ -462,62 +443,48 @@ def normalize_state_patches(req: TurnResultRequest | ApplyTurnResultRequest) -> 
         "inventory_patches": getattr(req, "inventory_changes", None),
         "power_state_patches": getattr(req, "power_changes", None),
     }
-    for key, value in compatibility_pairs.items():
+    for key, value in pairs.items():
         if isinstance(value, dict) and value:
             patches[key] = value
     return patches
 
 
-def mark_game_turn(session_id: str, scene_id: str, scene_text: str, state_patches: Optional[Dict[str, Any]] = None) -> None:
-    session_dir = ensure_dirs(session_id)
-    current_state = get_current_state(session_id)
-    story_lines = get_story_lines(session_id)
-    patches = state_patches or {}
-
-    current_patch = patches.get("current_state_patch") if isinstance(patches, dict) else None
-    if isinstance(current_patch, dict):
-        deep_merge(current_state, current_patch)
-
-    story_patch = patches.get("story_line_patches") if isinstance(patches, dict) else None
-    if isinstance(story_patch, dict):
-        deep_merge(story_lines, story_patch)
-
-    if scene_id == "start_scene":
-        current_state["game_started"] = True
-        current_state["first_scene_delivered"] = True
-
-    counter = story_lines.setdefault("turn_counter", {})
-    counter["total_game_turns"] = int(counter.get("total_game_turns", current_state.get("turn_counter", 0)) or 0) + 1
-    counter["since_last_compaction"] = int(counter.get("since_last_compaction", current_state.get("since_last_compaction", 0)) or 0) + 1
-    counter["compact_every_turns"] = int(counter.get("compact_every_turns", current_state.get("compact_every", 15)) or 15)
-    counter["updated_at"] = utc_now()
-
-    current_state["turn_counter"] = counter["total_game_turns"]
-    current_state["since_last_compaction"] = counter["since_last_compaction"]
-    current_state["compact_every"] = counter["compact_every_turns"]
-    current_state["last_scene_id"] = scene_id
-
-    append_jsonl(session_dir / "scene_history.jsonl", {"time": utc_now(), "scene_id": scene_id, "scene_text": scene_text, "state_patches": patches})
-    save_current_state(session_id, current_state)
-    save_story_lines(session_id, story_lines)
-
-
 def save_turn_result(session_id: str, req: TurnResultRequest | ApplyTurnResultRequest) -> Dict[str, Any]:
-    session_dir = ensure_dirs(session_id)
-    safe_id = safe_session_id(session_id)
+    sdir = ensure_session_state(session_id)
     scene_id = getattr(req, "scene_id", None) or "scene"
     scene_text = getattr(req, "scene_text", None) or ""
     technical = bool(getattr(req, "technical", False))
     patches = normalize_state_patches(req)
 
     if technical:
-        append_jsonl(session_dir / "technical_history.jsonl", {"time": utc_now(), "scene_id": scene_id, "text": scene_text})
-        write_json_atomic(session_dir / "last_turn_result.json", {"scene_id": scene_id, "scene_text": scene_text, "technical": technical, "state_patches": patches})
-        return {"success": True, "status": "technical_saved", "session_id": safe_id, "updated_files": ["technical_history.jsonl", "last_turn_result.json"]}
+        append_jsonl(sdir / "technical_history.jsonl", {"time": utc_now(), "scene_id": scene_id, "text": scene_text})
+        return {"success": True, "status": "technical_saved", "session_id": safe_session_id(session_id), "updated_files": ["technical_history.jsonl"]}
 
-    mark_game_turn(session_id, scene_id, scene_text, patches)
-    write_json_atomic(session_dir / "last_turn_result.json", {"scene_id": scene_id, "scene_text": scene_text, "technical": technical, "state_patches": patches})
-    return {"success": True, "status": "turn_result_saved", "session_id": safe_id, "updated_files": ["scene_history.jsonl", "last_turn_result.json", "current_state.json", "story_lines.json"]}
+    append_jsonl(sdir / "scene_history.jsonl", {"time": utc_now(), "scene_id": scene_id, "scene_text": scene_text, "state_patches": patches})
+
+    state = current_state(session_id)
+    current_patch = patches.get("current_state_patch")
+    if isinstance(current_patch, dict):
+        deep_merge(state, current_patch)
+    if scene_id == "start_scene":
+        state["game_started"] = True
+        state["first_scene_delivered"] = True
+    state["updated_at"] = utc_now()
+    write_json_atomic(sdir / "current_state.json", state)
+
+    lines = story_lines(session_id)
+    counter = lines.setdefault("turn_counter", {})
+    counter["total_game_turns"] = int(counter.get("total_game_turns", 0) or 0) + 1
+    counter["since_last_compaction"] = int(counter.get("since_last_compaction", 0) or 0) + 1
+    counter["last_scene_id"] = scene_id
+    counter["updated_at"] = utc_now()
+    story_patch = patches.get("story_line_patches")
+    if isinstance(story_patch, dict):
+        deep_merge(lines, story_patch)
+    write_json_atomic(sdir / "story_lines.json", lines)
+
+    write_json_atomic(sdir / "last_turn_result.json", {"scene_id": scene_id, "scene_text": scene_text, "technical": technical, "state_patches": patches})
+    return {"success": True, "status": "turn_result_saved", "session_id": safe_session_id(session_id), "updated_files": ["scene_history.jsonl", "current_state.json", "story_lines.json", "last_turn_result.json"]}
 
 
 def object_schema(properties: Dict[str, Any], required: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -527,37 +494,16 @@ def object_schema(properties: Dict[str, Any], required: Optional[List[str]] = No
     return schema
 
 
-def state_patches_schema() -> Dict[str, Any]:
-    return object_schema({
-        "current_state_patch": object_schema({}),
-        "scene_history_entry": object_schema({}),
-        "story_line_patches": object_schema({}),
-        "relationship_patches": object_schema({}),
-        "knowledge_patches": object_schema({}),
-        "inventory_patches": object_schema({}),
-        "rumor_patches": object_schema({}),
-        "reputation_patches": object_schema({}),
-        "power_state_patches": object_schema({}),
-        "summary_update": {"type": "string"},
-        "compaction_summary": {"type": "string"},
-    })
+def request_schema() -> Dict[str, Any]:
+    return object_schema({"user_input": {"type": "string"}, "mode": {"type": "string", "enum": ["play", "technical", "audit", "transfer"], "default": "play"}, "include_file_contents": {"type": "boolean", "default": True}, "client_context": {"type": "object"}}, ["user_input"])
 
 
-def turn_result_request_schema() -> Dict[str, Any]:
-    return object_schema({
-        "scene_id": {"type": "string", "default": "scene"},
-        "scene_text": {"type": "string"},
-        "technical": {"type": "boolean", "default": False},
-        "state_patches": state_patches_schema(),
-        "current_state_changes": object_schema({}),
-        "story_lines_changes": object_schema({}),
-        "relationship_changes": object_schema({}),
-        "knowledge_changes": object_schema({}),
-        "reputation_changes": object_schema({}),
-        "rumor_changes": object_schema({}),
-        "inventory_changes": object_schema({}),
-        "power_changes": object_schema({}),
-    }, required=["scene_text"])
+def result_schema() -> Dict[str, Any]:
+    return object_schema({"scene_id": {"type": "string", "default": "scene"}, "scene_text": {"type": "string"}, "technical": {"type": "boolean", "default": False}, "state_patches": {"type": "object"}, "current_state_changes": {"type": "object"}, "story_lines_changes": {"type": "object"}, "relationship_changes": {"type": "object"}, "knowledge_changes": {"type": "object"}, "reputation_changes": {"type": "object"}, "rumor_changes": {"type": "object"}, "inventory_changes": {"type": "object"}, "power_changes": {"type": "object"}}, ["scene_text"])
+
+
+def json_body(schema: Dict[str, Any], required: bool = True) -> Dict[str, Any]:
+    return {"required": required, "content": {"application/json": {"schema": schema}}}
 
 
 def session_parameter() -> Dict[str, Any]:
@@ -565,65 +511,26 @@ def session_parameter() -> Dict[str, Any]:
 
 
 def actions_schema_json() -> Dict[str, Any]:
-    string_array = {"type": "array", "items": {"type": "string"}}
-    generic_response = object_schema({"success": {"type": "boolean"}, "status": {"type": "string"}, "message": {"type": "string"}, "time": {"type": "string"}})
-    process_turn_response = object_schema({"session_id": {"type": "string"}, "player_input": {"type": "string"}, "current_scene_id": {"type": "string"}, "status": {"type": "string"}, "scene_text": {"type": "string"}})
-    turn_contract_response = object_schema({
-        "session_id": {"type": "string"},
-        "mode": {"type": "string"},
-        "is_game_turn": {"type": "boolean"},
-        "start_requested": {"type": "boolean"},
-        "can_generate_scene": {"type": "boolean"},
-        "response_mode": {"type": "string"},
-        "must_output_initial_scene_text": {"type": "boolean"},
-        "initial_scene_text": {"type": "string"},
-        "current_scene_anchor": object_schema({"date": {"type": "string"}, "time": {"type": "string"}, "scene_id": {"type": "string"}, "location": {"type": "string"}, "active_characters": string_array, "nearby_characters": string_array, "conditional_characters": string_array}),
-        "calendar_window": object_schema({"file": {"type": "string"}, "event_id": {"type": "string"}, "next_required_event": {"type": "string"}}),
-        "required_files": string_array,
-        "required_file_contents": object_schema({}),
-        "optional_files": string_array,
-        "forbidden_files_or_topics": string_array,
-        "topic_triggers": string_array,
-        "relationship_pairs_needed": string_array,
-        "turn_counter": object_schema({"total_game_turns": {"type": "integer"}, "since_last_compaction": {"type": "integer"}, "compact_every_turns": {"type": "integer"}}),
-        "compact_every": {"type": "integer"},
-        "should_compact": {"type": "boolean"},
-        "checks": string_array,
-        "message": {"type": "string"},
-    })
-    turn_result_response = object_schema({"success": {"type": "boolean"}, "status": {"type": "string"}, "session_id": {"type": "string"}, "updated_files": string_array})
-    turn_contract_request = object_schema({
-        "user_input": {"type": "string"},
-        "mode": {"type": "string", "enum": ["play", "technical", "audit", "transfer"], "default": "play"},
-        "include_file_contents": {"type": "boolean", "default": False},
-        "client_context": object_schema({"last_assistant_message_id": {"type": "string"}, "known_current_scene_anchor": {"type": "string"}}),
-    }, required=["user_input"])
-
     return {
         "openapi": "3.1.0",
-        "info": {"title": "Akira Main 1206 API", "version": "1.4.0", "description": "Railway API for Akira Main 1206 exact start scene output and state saving."},
+        "info": {"title": "Akira Main 1206 API", "version": "1.5.0"},
         "servers": [{"url": PUBLIC_BASE_URL}],
         "paths": {
-            "/health": {"get": {"operationId": "healthCheck", "summary": "Check API health", "responses": {"200": {"description": "API is running", "content": {"application/json": {"schema": generic_response}}}}}},
-            "/debug/volume": {"get": {"operationId": "debugVolume", "summary": "Check Railway volume", "responses": {"200": {"description": "Railway volume status"}}}},
-            "/api/v1/sessions": {"post": {"operationId": "createSession", "summary": "Create or initialize a runtime session", "requestBody": {"required": False, "content": {"application/json": {"schema": object_schema({"session_id": {"type": "string"}, "reset": {"type": "boolean", "default": False}})}}}, "responses": {"200": {"description": "Session initialized"}}}},
-            "/api/v1/turn/context": {"post": {"operationId": "getDefaultTurnContext", "summary": "Get default turn context", "requestBody": {"required": True, "content": {"application/json": {"schema": turn_contract_request}}}, "responses": {"200": {"description": "Turn contract", "content": {"application/json": {"schema": turn_contract_response}}}}}},
-            "/api/v1/sessions/{session_id}/turn": {"post": {"operationId": "processTurn", "summary": "Engine-style turn processing. On first start command returns exact start scene text with a slim response.", "parameters": [session_parameter()], "requestBody": {"required": True, "content": {"application/json": {"schema": object_schema({"player_input": {"type": "string"}, "mode": {"type": "string", "enum": ["play", "technical", "audit", "transfer"], "default": "play"}, "state_patches": state_patches_schema()}, required=["player_input"])}}}, "responses": {"200": {"description": "Turn processed", "content": {"application/json": {"schema": process_turn_response}}}}}},
-            "/api/v1/sessions/{session_id}/turn-contract": {"post": {"operationId": "getTurnContract", "summary": "Get turn context before generating a scene", "parameters": [session_parameter()], "requestBody": {"required": True, "content": {"application/json": {"schema": turn_contract_request}}}, "responses": {"200": {"description": "Turn contract", "content": {"application/json": {"schema": turn_contract_response}}}}}},
-            "/api/v1/sessions/{session_id}/turn-result": {"post": {"operationId": "submitTurnResult", "summary": "Save generated scene and state patches", "parameters": [session_parameter()], "requestBody": {"required": True, "content": {"application/json": {"schema": turn_result_request_schema()}}}, "responses": {"200": {"description": "Turn result saved", "content": {"application/json": {"schema": turn_result_response}}}}}},
-            "/api/v1/sessions/{session_id}/apply-turn-result": {"post": {"operationId": "applyTurnResult", "summary": "Compatibility alias for saving generated scene and state changes", "parameters": [session_parameter()], "requestBody": {"required": True, "content": {"application/json": {"schema": turn_result_request_schema()}}}, "responses": {"200": {"description": "Turn result saved", "content": {"application/json": {"schema": turn_result_response}}}}}},
-            "/api/v1/files/{file_path}": {"get": {"operationId": "readProjectFile", "summary": "Read a repository file by path", "parameters": [{"name": "file_path", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "File content"}}}},
+            "/health": {"get": {"operationId": "healthCheck", "summary": "Check API health", "responses": {"200": {"description": "API is running"}}}},
+            "/debug/volume": {"get": {"operationId": "debugVolume", "summary": "Check Railway volume", "responses": {"200": {"description": "Volume status"}}}},
+            "/api/v1/sessions": {"post": {"operationId": "createSession", "summary": "Create or initialize session", "requestBody": json_body(object_schema({"session_id": {"type": "string"}, "reset": {"type": "boolean", "default": False}}), required=False), "responses": {"200": {"description": "Session initialized"}}}},
+            "/api/v1/turn/context": {"post": {"operationId": "getDefaultTurnContext", "summary": "Get default turn context", "requestBody": json_body(request_schema()), "responses": {"200": {"description": "Turn context"}}}},
+            "/api/v1/sessions/{session_id}/turn-contract": {"post": {"operationId": "getTurnContract", "summary": "Get turn context before scene generation", "parameters": [session_parameter()], "requestBody": json_body(request_schema()), "responses": {"200": {"description": "Turn context"}}}},
+            "/api/v1/sessions/{session_id}/turn-result": {"post": {"operationId": "submitTurnResult", "summary": "Save generated scene", "parameters": [session_parameter()], "requestBody": json_body(result_schema()), "responses": {"200": {"description": "Turn saved"}}}},
+            "/api/v1/sessions/{session_id}/apply-turn-result": {"post": {"operationId": "applyTurnResult", "summary": "Compatibility save endpoint", "parameters": [session_parameter()], "requestBody": json_body(result_schema()), "responses": {"200": {"description": "Turn saved"}}}},
+            "/api/v1/files/{file_path}": {"get": {"operationId": "readProjectFile", "summary": "Read repository or runtime file", "parameters": [{"name": "file_path", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "File content"}}}},
         },
     }
 
 
-def actions_schema_yaml() -> str:
-    return json.dumps(actions_schema_json(), ensure_ascii=False, indent=2)
-
-
 @app.get("/")
 def root() -> Dict[str, Any]:
-    return {"status": "ok", "service": "Akira Main 1206 API", "version": "1.4.0", "docs": "/docs", "openapi": "/openapi.json", "actions_schema_yaml": "/openapi-actions.yaml", "actions_schema_json": "/openapi-actions.json", "start_command": "начнем", "engine_style_start_endpoint": "/api/v1/sessions/{session_id}/turn"}
+    return {"status": "ok", "service": "Akira Main 1206 API", "version": "1.5.0", "actions_schema_json": "/openapi-actions.json"}
 
 
 @app.get("/health")
@@ -633,20 +540,17 @@ def health() -> Dict[str, Any]:
 
 @app.get("/debug/volume")
 def debug_volume() -> Dict[str, Any]:
-    try:
-        ensure_dirs(DEFAULT_SESSION_ID)
-        test_file = DATA_DIR / "volume_test.txt"
-        test_file.write_text(f"volume works {utc_now()}\n", encoding="utf-8")
-        return {"success": True, "mount": str(DATA_DIR), "exists": DATA_DIR.exists(), "sessions_dir": str(SESSIONS_DIR), "test_file": str(test_file), "test_file_exists": test_file.exists(), "files": sorted(p.name for p in DATA_DIR.iterdir())}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    ensure_session_state(DEFAULT_SESSION_ID)
+    test_file = DATA_DIR / "volume_test.txt"
+    test_file.write_text(f"volume works {utc_now()}\n", encoding="utf-8")
+    return {"success": True, "mount": str(DATA_DIR), "exists": DATA_DIR.exists(), "sessions_dir": str(SESSIONS_DIR), "test_file_exists": test_file.exists(), "session_files": sorted(p.name for p in session_dir(DEFAULT_SESSION_ID).iterdir())}
 
 
 @app.post("/api/v1/sessions")
 def create_session(req: CreateSessionRequest = Body(default=CreateSessionRequest())) -> Dict[str, Any]:
     sid = safe_session_id(req.session_id or DEFAULT_SESSION_ID)
     sdir = ensure_session_state(sid, reset=req.reset)
-    return {"success": True, "session_id": sid, "session_dir": str(sdir), "reset": req.reset, "files": sorted(p.name for p in sdir.iterdir()), "next": {"turn": f"/api/v1/sessions/{sid}/turn", "turn_contract": f"/api/v1/sessions/{sid}/turn-contract", "turn_result": f"/api/v1/sessions/{sid}/turn-result"}}
+    return {"success": True, "session_id": sid, "session_dir": str(sdir), "reset": req.reset, "files": sorted(p.name for p in sdir.iterdir()), "next": {"turn_contract": f"/api/v1/sessions/{sid}/turn-contract", "turn_result": f"/api/v1/sessions/{sid}/turn-result"}}
 
 
 @app.post("/api/v1/turn/context")
@@ -656,29 +560,26 @@ def default_turn_context(req: TurnContractRequest) -> Dict[str, Any]:
 
 @app.post("/api/v1/sessions/{session_id}/turn")
 def process_turn(session_id: str, req: ProcessTurnRequest) -> Dict[str, Any]:
-    mode = classify_mode_text(req.player_input, req.mode)
-    safe_id = safe_session_id(session_id)
+    mode = classify_mode(TurnContractRequest(user_input=req.player_input, mode=req.mode))
+    sid = safe_session_id(session_id)
+    state = current_state(sid)
+    scene_id = state.get("scene_id", "start_scene")
+    started = bool(state.get("game_started") or state.get("first_scene_delivered"))
 
     if mode != "play":
-        append_jsonl(ensure_dirs(safe_id) / "technical_history.jsonl", {"time": utc_now(), "text": req.player_input})
-        return {"session_id": safe_id, "player_input": req.player_input, "current_scene_id": get_current_state(safe_id).get("scene_id"), "status": "TECHNICAL_TURN. Сцена не продолжалась, игровой state не менялся.", "scene_text": ""}
+        append_jsonl(session_dir(sid) / "technical_history.jsonl", {"time": utc_now(), "text": req.player_input})
+        return {"session_id": sid, "player_input": req.player_input, "current_scene_id": scene_id, "status": "TECHNICAL_TURN", "scene_text": ""}
 
-    state = get_current_state(safe_id)
-    scene_id = state.get("scene_id", "start_scene")
-    game_started = bool(state.get("game_started") or state.get("first_scene_delivered"))
-
-    if scene_id == "start_scene" and not game_started:
+    if scene_id == "start_scene" and not started:
         if not is_start_command(req.player_input):
-            return {"session_id": safe_id, "player_input": req.player_input, "current_scene_id": scene_id, "status": "AWAIT_START_COMMAND. Напиши 'начнем', чтобы получить стартовую сцену.", "scene_text": ""}
-
+            return {"session_id": sid, "player_input": req.player_input, "current_scene_id": scene_id, "status": "AWAIT_START_COMMAND", "scene_text": ""}
         scene_text = get_start_scene_text()
         if not scene_text:
-            return {"session_id": safe_id, "player_input": req.player_input, "current_scene_id": scene_id, "status": "START_SCENE_TEXT_MISSING. Проверь data/scenes/start_scene.md -> ## Текст первого вывода.", "scene_text": ""}
+            return {"session_id": sid, "player_input": req.player_input, "current_scene_id": scene_id, "status": "START_SCENE_TEXT_MISSING", "scene_text": ""}
+        save_turn_result(sid, TurnResultRequest(scene_id="start_scene", scene_text=scene_text, technical=False, state_patches=req.state_patches))
+        return {"session_id": sid, "player_input": req.player_input, "current_scene_id": "start_scene", "status": "START_SCENE_EXACT_TEXT", "scene_text": scene_text}
 
-        mark_game_turn(safe_id, "start_scene", scene_text, req.state_patches)
-        return {"session_id": safe_id, "player_input": req.player_input, "current_scene_id": "start_scene", "status": "START_SCENE_EXACT_TEXT. Выведи scene_text дословно. Не пересказывай, не переписывай, не продолжай сцену.", "scene_text": scene_text}
-
-    return {"session_id": safe_id, "player_input": req.player_input, "current_scene_id": scene_id, "status": "USE_TURN_CONTRACT. Для продолжения вызови getTurnContract, прочитай required_files, напиши сцену и затем вызови submitTurnResult/applyTurnResult.", "scene_text": ""}
+    return {"session_id": sid, "player_input": req.player_input, "current_scene_id": scene_id, "status": "USE_TURN_CONTRACT", "scene_text": ""}
 
 
 @app.post("/api/v1/sessions/{session_id}/turn-contract")
@@ -697,9 +598,9 @@ def apply_turn_result(session_id: str, req: ApplyTurnResultRequest) -> Dict[str,
 
 
 @app.get("/api/v1/files/{file_path:path}")
-def read_file_endpoint(file_path: str) -> Dict[str, Any]:
+def read_file_endpoint(file_path: str, session_id: str = DEFAULT_SESSION_ID) -> Dict[str, Any]:
     path = safe_repo_path(file_path)
-    text = read_repo_text(path)
+    text = read_project_file(path, session_id)
     if not text:
         raise HTTPException(status_code=404, detail="File not found or empty")
     return {"path": path, **trimmed(text)}
@@ -707,7 +608,7 @@ def read_file_endpoint(file_path: str) -> Dict[str, Any]:
 
 @app.get("/openapi-actions.yaml", response_class=PlainTextResponse)
 def openapi_actions_yaml() -> str:
-    return actions_schema_yaml() + "\n"
+    return json.dumps(actions_schema_json(), ensure_ascii=False, indent=2) + "\n"
 
 
 @app.get("/openapi-actions.json")
