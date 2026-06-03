@@ -215,9 +215,57 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
     }
 
 
+def object_schema(properties: Dict[str, Any], required: Optional[List[str]] = None) -> Dict[str, Any]:
+    schema: Dict[str, Any] = {"type": "object", "properties": properties}
+    if required:
+        schema["required"] = required
+    return schema
+
+
 def actions_schema_json() -> Dict[str, Any]:
+    string_array = {"type": "array", "items": {"type": "string"}}
+    generic_response = object_schema({
+        "success": {"type": "boolean"},
+        "status": {"type": "string"},
+        "message": {"type": "string"},
+        "time": {"type": "string"},
+    })
+    turn_contract_response = object_schema({
+        "session_id": {"type": "string"},
+        "mode": {"type": "string"},
+        "is_game_turn": {"type": "boolean"},
+        "can_generate_scene": {"type": "boolean"},
+        "current_scene_anchor": object_schema({
+            "date": {"type": "string"},
+            "time": {"type": "string"},
+            "scene_id": {"type": "string"},
+            "location": {"type": "string"},
+            "active_characters": string_array,
+            "nearby_characters": string_array,
+            "conditional_characters": string_array,
+        }),
+        "calendar_window": object_schema({
+            "file": {"type": "string"},
+            "event_id": {"type": "string"},
+            "next_required_event": {"type": "string"},
+        }),
+        "required_files": string_array,
+        "optional_files": string_array,
+        "forbidden_files_or_topics": string_array,
+        "topic_triggers": string_array,
+        "relationship_pairs_needed": string_array,
+        "checks": string_array,
+        "message": {"type": "string"},
+    })
+    turn_result_response = object_schema({
+        "success": {"type": "boolean"},
+        "status": {"type": "string"},
+        "session_id": {"type": "string"},
+        "updated_files": string_array,
+    })
+
     return {
-        "openapi": "3.0.3",
+        "openapi": "3.1.0",
         "info": {
             "title": "Akira Main 1206 API",
             "version": "1.0.0",
@@ -229,14 +277,22 @@ def actions_schema_json() -> Dict[str, Any]:
                 "get": {
                     "operationId": "healthCheck",
                     "summary": "Check API health",
-                    "responses": {"200": {"description": "API is running", "content": {"application/json": {"schema": {"type": "object"}}}}},
+                    "responses": {"200": {"description": "API is running", "content": {"application/json": {"schema": generic_response}}}},
                 }
             },
             "/debug/volume": {
                 "get": {
                     "operationId": "debugVolume",
                     "summary": "Check Railway volume",
-                    "responses": {"200": {"description": "Railway volume status", "content": {"application/json": {"schema": {"type": "object"}}}}},
+                    "responses": {"200": {"description": "Railway volume status", "content": {"application/json": {"schema": object_schema({
+                        "success": {"type": "boolean"},
+                        "mount": {"type": "string"},
+                        "exists": {"type": "boolean"},
+                        "sessions_dir": {"type": "string"},
+                        "test_file": {"type": "string"},
+                        "test_file_exists": {"type": "boolean"},
+                        "files": string_array,
+                    })}}}},
                 }
             },
             "/api/v1/sessions/{session_id}/turn-contract": {
@@ -248,19 +304,18 @@ def actions_schema_json() -> Dict[str, Any]:
                         "required": True,
                         "content": {
                             "application/json": {
-                                "schema": {
-                                    "type": "object",
-                                    "required": ["user_input", "mode"],
-                                    "properties": {
-                                        "user_input": {"type": "string"},
-                                        "mode": {"type": "string", "enum": ["play", "technical", "audit", "transfer"]},
-                                        "client_context": {"type": "object"},
-                                    },
-                                }
+                                "schema": object_schema({
+                                    "user_input": {"type": "string"},
+                                    "mode": {"type": "string", "enum": ["play", "technical", "audit", "transfer"]},
+                                    "client_context": object_schema({
+                                        "last_assistant_message_id": {"type": "string"},
+                                        "known_current_scene_anchor": {"type": "string"},
+                                    }),
+                                }, required=["user_input", "mode"])
                             }
                         },
                     },
-                    "responses": {"200": {"description": "Turn contract", "content": {"application/json": {"schema": {"type": "object"}}}}},
+                    "responses": {"200": {"description": "Turn contract", "content": {"application/json": {"schema": turn_contract_response}}}},
                 }
             },
             "/api/v1/sessions/{session_id}/turn-result": {
@@ -272,20 +327,27 @@ def actions_schema_json() -> Dict[str, Any]:
                         "required": True,
                         "content": {
                             "application/json": {
-                                "schema": {
-                                    "type": "object",
-                                    "required": ["scene_id", "scene_text", "technical"],
-                                    "properties": {
-                                        "scene_id": {"type": "string"},
-                                        "scene_text": {"type": "string"},
-                                        "technical": {"type": "boolean"},
-                                        "state_patches": {"type": "object"},
-                                    },
-                                }
+                                "schema": object_schema({
+                                    "scene_id": {"type": "string"},
+                                    "scene_text": {"type": "string"},
+                                    "technical": {"type": "boolean"},
+                                    "state_patches": object_schema({
+                                        "current_state_patch": object_schema({}),
+                                        "scene_history_entry": object_schema({}),
+                                        "story_line_patches": object_schema({}),
+                                        "relationship_patches": object_schema({}),
+                                        "knowledge_patches": object_schema({}),
+                                        "inventory_patches": object_schema({}),
+                                        "rumor_patches": object_schema({}),
+                                        "reputation_patches": object_schema({}),
+                                        "power_state_patches": object_schema({}),
+                                        "summary_update": {"type": "string"},
+                                    }),
+                                }, required=["scene_id", "scene_text", "technical"])
                             }
                         },
                     },
-                    "responses": {"200": {"description": "Turn result saved", "content": {"application/json": {"schema": {"type": "object"}}}}},
+                    "responses": {"200": {"description": "Turn result saved", "content": {"application/json": {"schema": turn_result_response}}}},
                 }
             },
         },
@@ -293,15 +355,15 @@ def actions_schema_json() -> Dict[str, Any]:
 
 
 def actions_schema_yaml() -> str:
-    # Kept intentionally simple for GPT Builder import fallback.
-    return f"""
-openapi: 3.0.3
+    # JSON endpoint is preferred. YAML is kept as a readable fallback.
+    return """
+openapi: 3.1.0
 info:
   title: Akira Main 1206 API
   version: "1.0.0"
   description: Railway API for Akira Main 1206 session context and state saving.
 servers:
-  - url: {PUBLIC_BASE_URL}
+  - url: https://akira-main-1206-production.up.railway.app
 paths:
   /health:
     get:
@@ -314,6 +376,13 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  success:
+                    type: boolean
+                  status:
+                    type: string
+                  time:
+                    type: string
   /debug/volume:
     get:
       operationId: debugVolume
@@ -325,7 +394,18 @@ paths:
             application/json:
               schema:
                 type: object
-  /api/v1/sessions/{{session_id}}/turn-contract:
+                properties:
+                  success:
+                    type: boolean
+                  mount:
+                    type: string
+                  exists:
+                    type: boolean
+                  sessions_dir:
+                    type: string
+                  test_file_exists:
+                    type: boolean
+  /api/v1/sessions/{session_id}/turn-contract:
     post:
       operationId: getTurnContract
       summary: Get turn context before generating a scene
@@ -341,9 +421,7 @@ paths:
           application/json:
             schema:
               type: object
-              required:
-                - user_input
-                - mode
+              required: [user_input, mode]
               properties:
                 user_input:
                   type: string
@@ -352,6 +430,11 @@ paths:
                   enum: [play, technical, audit, transfer]
                 client_context:
                   type: object
+                  properties:
+                    last_assistant_message_id:
+                      type: string
+                    known_current_scene_anchor:
+                      type: string
       responses:
         "200":
           description: Turn contract
@@ -359,7 +442,26 @@ paths:
             application/json:
               schema:
                 type: object
-  /api/v1/sessions/{{session_id}}/turn-result:
+                properties:
+                  session_id:
+                    type: string
+                  mode:
+                    type: string
+                  is_game_turn:
+                    type: boolean
+                  can_generate_scene:
+                    type: boolean
+                  required_files:
+                    type: array
+                    items:
+                      type: string
+                  checks:
+                    type: array
+                    items:
+                      type: string
+                  message:
+                    type: string
+  /api/v1/sessions/{session_id}/turn-result:
     post:
       operationId: submitTurnResult
       summary: Save generated scene and state patches
@@ -375,10 +477,7 @@ paths:
           application/json:
             schema:
               type: object
-              required:
-                - scene_id
-                - scene_text
-                - technical
+              required: [scene_id, scene_text, technical]
               properties:
                 scene_id:
                   type: string
@@ -388,6 +487,12 @@ paths:
                   type: boolean
                 state_patches:
                   type: object
+                  properties:
+                    current_state_patch:
+                      type: object
+                      properties: {}
+                    summary_update:
+                      type: string
       responses:
         "200":
           description: Turn result saved
@@ -395,6 +500,13 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  success:
+                    type: boolean
+                  status:
+                    type: string
+                  session_id:
+                    type: string
 """.strip()
 
 
