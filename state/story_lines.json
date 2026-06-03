@@ -1,0 +1,164 @@
+{
+  "schema": "story_lines_v1",
+  "project": "akira-main-1206",
+  "purpose": "Рабочая память основной истории 1206: события, календарные окна, отношения, знания, обязательства, next_beats и compaction.",
+  "rules": {
+    "no_one_scene_files": true,
+    "every_event_requires_absolute_date": true,
+    "relative_dates_must_be_calculated_from_current_state_date": true,
+    "technical_turns_do_not_move_scene": true,
+    "story_is_not_simulator": true,
+    "calendar_does_not_give_npc_future_knowledge": true
+  },
+  "calendar_policy": {
+    "date_format": "YYYY-MM-DD",
+    "relative_date_rules": {
+      "same_day": "сегодня / утром / днём / вечером / ночью",
+      "one_day_ago": "вчера",
+      "two_days_ago": "позавчера / два дня назад",
+      "three_to_six_days_ago": "несколько дней назад / N дней назад",
+      "seven_days_ago": "неделю назад",
+      "more_than_seven_days_ago": "точная дата или период"
+    },
+    "hard_rule": "Не использовать 'вчера', если прошло больше одного дня."
+  },
+  "turn_counter": {
+    "total_game_turns": 0,
+    "since_last_compaction": 0,
+    "compact_every_turns": 15,
+    "last_compaction_turn": 0,
+    "last_compaction_date": null,
+    "last_compaction_note": null,
+    "technical_turns_do_not_count": true
+  },
+  "next_beats": {
+    "rules": {
+      "each_beat_has_date_or_condition": true,
+      "if_due_then_show_or_explain_delay": true,
+      "do_not_force_if_condition_not_met": true,
+      "remove_or_compact_after_resolved": true
+    },
+    "active": [
+      {
+        "beat_id": "start_scene_1206_08_31_0240",
+        "date_or_condition": "1206-08-31 02:40 / стартовая сцена",
+        "related_ids": ["akira", "jun_carter", "irey", "emma"],
+        "summary": "Акира просыпается ночью в доме Джуна, слышит голоса снизу, видит двух беловолосых незнакомцев и записку 'Рэй / Восточный сектор'. Первый вывод должен идти по data/scenes/start_scene.md, если ещё не был выдан.",
+        "status": "open",
+        "priority": "critical"
+      },
+      {
+        "beat_id": "opening_house_sequence_1206_08_31",
+        "date_or_condition": "1206-08-31 02:40–03:02 / дом Джуна",
+        "related_ids": ["akira", "jun_carter", "irey", "emma"],
+        "summary": "Окно действий в доме: слушать, спуститься, уйти, взять вещи, столкнуться с давлением Эммы и сбоем Ирэя. Райдена не вводить до условия.",
+        "status": "scheduled",
+        "priority": "critical"
+      },
+      {
+        "beat_id": "raiden_motorcycle_arrival_1206_08_31_0302",
+        "date_or_condition": "1206-08-31 около 03:02 / условие: конфликт, энергетический импульс, побег к дороге или морской маршрут",
+        "related_ids": ["raiden_sterling", "akira", "jun_carter", "irey", "emma"],
+        "summary": "Райден входит в активную сцену только при выполнении условия. Он едет к морю из-за личной даты, а не потому что знает об Акире.",
+        "status": "conditional",
+        "priority": "high"
+      },
+      {
+        "beat_id": "samuel_people_window_1206_08_31_0323",
+        "date_or_condition": "не раньше 1206-08-31 03:23 / условие: Акира вне Восточного сектора",
+        "related_ids": ["samuel_sterling", "akira"],
+        "summary": "Люди Самуэля могут появиться только если Акира всё ещё вне Восточного сектора. Нельзя вводить их раньше или если она уже на базе/в секторе.",
+        "status": "conditional",
+        "priority": "medium"
+      },
+      {
+        "beat_id": "miki_first_entry_1206_09_01",
+        "date_or_condition": "1206-09-01 / первое появление Мики",
+        "related_ids": ["miki_larsen", "akira"],
+        "summary": "Мики должна появиться 1 сентября как живой социальный контакт на базе, а не справка.",
+        "status": "scheduled",
+        "priority": "high"
+      },
+      {
+        "beat_id": "yuna_deadline_entry_1206_09_05",
+        "date_or_condition": "до 1206-09-05 включительно / Юна",
+        "related_ids": ["yuna", "akira"],
+        "summary": "Юна появляется при ранении/медблоке раньше или не позже 5 сентября через медосмотр/допуск/проверку. Не раскрывать её прошлое с Самуэлем сразу.",
+        "status": "scheduled",
+        "priority": "high"
+      },
+      {
+        "beat_id": "seventh_squad_planned_raid_1206_09_15",
+        "date_or_condition": "1206-09-15 / плановый рейд 7 отряда",
+        "related_ids": ["raiden_sterling", "haru_foster", "akira"],
+        "summary": "Обычный плановый выезд 7 отряда. Акира может оказаться в рейде только через логичную подводку, не приказом Рэя 'взять её'.",
+        "status": "scheduled",
+        "priority": "critical"
+      },
+      {
+        "beat_id": "first_raid_echo_1206_09_15",
+        "date_or_condition": "1206-09-15 / условие: Акира вне базы/барьера 30+ минут",
+        "related_ids": ["akira", "raiden_sterling", "haru_foster"],
+        "summary": "Эхо может проявиться только после 30+ минут Акиры вне барьера. До условия рейд выглядит обычным.",
+        "status": "conditional",
+        "priority": "critical"
+      }
+    ],
+    "resolved": []
+  },
+  "daily_timeline": {},
+  "shared_events": [],
+  "lines": {
+    "line_start_house": {
+      "title": "Стартовая ночь в доме Джуна",
+      "character_ids": ["akira", "jun_carter", "irey", "emma"],
+      "related_ids": ["raiden_sterling", "ray_carter"],
+      "current_summary": "Акира просыпается 31 августа 1206 в 02:40, слышит голоса снизу и видит беловолосых незнакомцев. Джун защищает и тянет время. Имена Ирэя/Эммы не раскрывать в восприятии Акиры до сцены.",
+      "events": [],
+      "open_threads": ["записка Рэй / Восточный сектор", "условие появления Райдена около 03:02", "запрет Эхо на старте"],
+      "compacted_summary": "",
+      "compacted_history": []
+    },
+    "line_akira_memory": {
+      "title": "Память Акиры",
+      "character_ids": ["akira"],
+      "related_ids": ["jun_carter", "ray_carter", "irey", "samuel_sterling", "raiden_sterling"],
+      "current_summary": "Акира помнит только последние два года. Фамилия Акацуми — документы после потери памяти; Картер всплывает через бумаги/удостоверение, но не как живая память.",
+      "events": [],
+      "open_threads": ["имя Ирэй всплыло внутренним сбоем, но не является осознанным знанием", "прошлое у Самуэля скрыто", "Рэй и Восточный сектор — ближайшая зацепка"],
+      "compacted_summary": "",
+      "compacted_history": []
+    },
+    "line_raiden_entry": {
+      "title": "Первое появление Райдена",
+      "character_ids": ["raiden_sterling"],
+      "related_ids": ["akira", "irey", "emma", "jun_carter"],
+      "current_summary": "Райден не активен в первом выводе. Его появление возможно около 03:02 при физическом основании: импульс, конфликт, побег, дорога/море. Он не знает Акиру и не едет за ней заранее.",
+      "events": [],
+      "open_threads": ["не вводить мотоцикл/голос/силуэт до условия", "причина близости — личная дата и море"],
+      "compacted_summary": "",
+      "compacted_history": []
+    },
+    "line_east_sector": {
+      "title": "Восточный сектор",
+      "character_ids": ["ray_carter", "raiden_sterling", "haru_foster", "miki_larsen", "alex"],
+      "related_ids": ["akira", "jun_carter", "yuna"],
+      "current_summary": "Восточный сектор — цель записки и будущая база. Дорога туда не должна быть пустым телепортом: нужны последствия старта и логичный маршрут.",
+      "events": [],
+      "open_threads": ["Мики 1 сентября", "Юна до 5 сентября", "рейд 7 отряда 15 сентября"],
+      "compacted_summary": "",
+      "compacted_history": []
+    },
+    "line_samuel": {
+      "title": "Самуэль / Северный сектор / EOGAE",
+      "character_ids": ["samuel_sterling"],
+      "related_ids": ["emma", "irey", "yuna", "akira", "raiden_sterling"],
+      "current_summary": "Самуэль не активен на старте напрямую. Его люди могут появиться не раньше 03:23 и только если Акира вне Восточного сектора. Его скрытая линия не раскрывается персонажам автоматически.",
+      "events": [],
+      "open_threads": ["условное окно людей Самуэля", "Юна связана с прошлой закрытой линией, но это не публичное знание"],
+      "compacted_summary": "",
+      "compacted_history": []
+    }
+  },
+  "compacted_history": []
+}
