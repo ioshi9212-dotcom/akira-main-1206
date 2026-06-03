@@ -1,0 +1,235 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Akira Main 1206 API",
+    "version": "1.1.0",
+    "description": "Railway API for Akira Main 1206 session context, start-command gating and state saving. Source of truth is the live endpoint /openapi-actions.json."
+  },
+  "servers": [
+    {
+      "url": "https://akira-main-1206-production.up.railway.app"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "healthCheck",
+        "summary": "Check API health",
+        "responses": {
+          "200": {
+            "description": "API is running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "status": { "type": "string" },
+                    "message": { "type": "string" },
+                    "time": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/debug/volume": {
+      "get": {
+        "operationId": "debugVolume",
+        "summary": "Check Railway volume",
+        "responses": {
+          "200": {
+            "description": "Railway volume status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "mount": { "type": "string" },
+                    "exists": { "type": "boolean" },
+                    "sessions_dir": { "type": "string" },
+                    "test_file": { "type": "string" },
+                    "test_file_exists": { "type": "boolean" },
+                    "files": { "type": "array", "items": { "type": "string" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{session_id}/turn-contract": {
+      "post": {
+        "operationId": "getTurnContract",
+        "summary": "Get turn context before generating a scene",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["user_input", "mode"],
+                "properties": {
+                  "user_input": {
+                    "type": "string",
+                    "description": "User message, player action, start command, or technical request."
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": ["play", "technical", "audit", "transfer"],
+                    "description": "Use technical for repository/API/schema/Volume checks and updates. Use play for real player actions."
+                  },
+                  "client_context": {
+                    "type": "object",
+                    "properties": {
+                      "last_assistant_message_id": { "type": "string" },
+                      "known_current_scene_anchor": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Turn contract",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "session_id": { "type": "string" },
+                    "mode": { "type": "string" },
+                    "is_game_turn": { "type": "boolean" },
+                    "start_requested": { "type": "boolean" },
+                    "can_generate_scene": { "type": "boolean" },
+                    "response_mode": {
+                      "type": "string",
+                      "description": "await_start_command, emit_initial_scene_text_verbatim, or generate_next_scene_from_contract"
+                    },
+                    "must_output_initial_scene_text": { "type": "boolean" },
+                    "initial_scene_text": { "type": "string" },
+                    "current_scene_anchor": {
+                      "type": "object",
+                      "properties": {
+                        "date": { "type": "string" },
+                        "time": { "type": "string" },
+                        "scene_id": { "type": "string" },
+                        "location": { "type": "string" },
+                        "active_characters": { "type": "array", "items": { "type": "string" } },
+                        "nearby_characters": { "type": "array", "items": { "type": "string" } },
+                        "conditional_characters": { "type": "array", "items": { "type": "string" } }
+                      }
+                    },
+                    "calendar_window": {
+                      "type": "object",
+                      "properties": {
+                        "file": { "type": "string" },
+                        "event_id": { "type": "string" },
+                        "next_required_event": { "type": "string" }
+                      }
+                    },
+                    "required_files": { "type": "array", "items": { "type": "string" } },
+                    "optional_files": { "type": "array", "items": { "type": "string" } },
+                    "forbidden_files_or_topics": { "type": "array", "items": { "type": "string" } },
+                    "topic_triggers": { "type": "array", "items": { "type": "string" } },
+                    "relationship_pairs_needed": { "type": "array", "items": { "type": "string" } },
+                    "turn_counter": {
+                      "type": "object",
+                      "properties": {
+                        "total_game_turns": { "type": "integer" },
+                        "since_last_compaction": { "type": "integer" },
+                        "compact_every_turns": { "type": "integer" }
+                      }
+                    },
+                    "compact_every": { "type": "integer" },
+                    "should_compact": { "type": "boolean" },
+                    "checks": { "type": "array", "items": { "type": "string" } },
+                    "message": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{session_id}/turn-result": {
+      "post": {
+        "operationId": "submitTurnResult",
+        "summary": "Save generated scene and state patches",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["scene_id", "scene_text", "technical"],
+                "properties": {
+                  "scene_id": { "type": "string" },
+                  "scene_text": { "type": "string" },
+                  "technical": { "type": "boolean" },
+                  "state_patches": {
+                    "type": "object",
+                    "properties": {
+                      "current_state_patch": { "type": "object" },
+                      "scene_history_entry": { "type": "object" },
+                      "story_line_patches": { "type": "object" },
+                      "relationship_patches": { "type": "object" },
+                      "knowledge_patches": { "type": "object" },
+                      "inventory_patches": { "type": "object" },
+                      "rumor_patches": { "type": "object" },
+                      "reputation_patches": { "type": "object" },
+                      "power_state_patches": { "type": "object" },
+                      "summary_update": { "type": "string" },
+                      "compaction_summary": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Turn result saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "status": { "type": "string" },
+                    "session_id": { "type": "string" },
+                    "updated_files": { "type": "array", "items": { "type": "string" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
