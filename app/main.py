@@ -18,9 +18,18 @@ DEFAULT_SESSION_ID = "main-1206-default"
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://akira-main-1206-production.up.railway.app")
 START_SCENE_FILE = "data/scenes/start_scene.md"
 
+START_COMMANDS = {
+    "начнем",
+    "начнём",
+    "начинай",
+    "старт",
+    "start",
+    "begin",
+}
+
 app = FastAPI(
     title="Akira Main 1206 API",
-    version="1.0.0",
+    version="1.1.0",
     description="Railway API for Akira Main 1206 session context and state saving.",
 )
 
@@ -83,7 +92,7 @@ def repo_file_exists(relative_path: str) -> bool:
 
 
 def existing_files(paths: List[str]) -> List[str]:
-    return [path for path in paths if repo_file_exists(path)]
+    return [path for path in dict.fromkeys(paths) if repo_file_exists(path)]
 
 
 def read_repo_text(relative_path: str) -> str:
@@ -114,19 +123,36 @@ def get_start_scene_text() -> str:
     return extract_first_text_block(read_repo_text(START_SCENE_FILE))
 
 
+def normalized_text(text: str) -> str:
+    return " ".join(text.strip().lower().replace("ё", "е").split())
+
+
+def is_start_command(text: str) -> bool:
+    norm = normalized_text(text)
+    return norm in {cmd.replace("ё", "е") for cmd in START_COMMANDS}
+
+
 def default_current_state() -> Dict[str, Any]:
     return {
+        "schema": "current_state_v1",
+        "project": "akira-main-1206",
         "date": "1206-08-31",
         "time": "02:40",
         "scene_id": "start_scene",
+        "current_scene_anchor": START_SCENE_FILE,
         "location": "jun_house_akira_room",
         "active_characters": ["akira", "jun_carter", "irey", "emma"],
         "nearby_characters": [],
         "conditional_characters": ["raiden_sterling"],
         "akira_state": "резко проснулась; тело напряжено; память держит только последние два года",
+        "game_started": False,
         "first_scene_delivered": False,
         "turn_counter": 0,
         "compact_every": 15,
+        "since_last_compaction": 0,
+        "last_compaction_turn": 0,
+        "last_compaction_date": None,
+        "last_compaction_note": None,
         "updated_at": utc_now(),
     }
 
@@ -147,58 +173,89 @@ def save_current_state(session_id: str, state: Dict[str, Any]) -> None:
     write_json_atomic(session_dir / "current_state.json", state)
 
 
+def get_story_lines(session_id: str) -> Dict[str, Any]:
+    session_dir = ensure_dirs(session_id)
+    path = session_dir / "story_lines.json"
+    state = read_json(path, None)
+    if state is None:
+        repo_starter = read_json(APP_ROOT / "state/story_lines.json", None)
+        state = repo_starter if isinstance(repo_starter, dict) else {"turn_counter": {"total_game_turns": 0, "since_last_compaction": 0, "compact_every_turns": 15}}
+        write_json_atomic(path, state)
+    return state
+
+
+def save_story_lines(session_id: str, story_lines: Dict[str, Any]) -> None:
+    session_dir = ensure_dirs(session_id)
+    write_json_atomic(session_dir / "story_lines.json", story_lines)
+
+
 def classify_mode(req: TurnContractRequest) -> str:
-    text = req.user_input.lower()
+    text = normalized_text(req.user_input)
     if req.mode != "play":
         return req.mode
     technical_markers = [
         "проверь", "проверяй", "репозитор", "github", "railway", "volume", "волум",
         "schema", "openapi", "api", "endpoint", "deploy", "билд", "build", "debug",
-        "не продолжай сцену", "техничес", "перенеси", "создай файл", "обнови файл",
+        "не продолжай сцену", "техничес", "перенеси", "переноси", "создай файл", "обнови файл",
+        "сверь", "сверка", "почини", "структура", "промт", "формат",
     ]
     if any(marker in text for marker in technical_markers):
         return "technical"
     return "play"
 
 
-def build_required_files(state: Dict[str, Any], mode: str) -> List[str]:
+def build_required_files(state: Dict[str, Any], mode: str, start_requested: bool) -> List[str]:
     base = [
         "gpt/engine_prompt.md",
         "gpt/context_loading_policy.md",
         "gpt/scene_format.md",
         "canon/scene_is_not_simulator.md",
         "calendar/story_calendar.md",
+        "characters/character_id_index.md",
     ]
     if mode != "play":
         return existing_files(base)
 
     scene_id = state.get("scene_id", "start_scene")
-    if scene_id == "start_scene":
+    game_started = bool(state.get("game_started") or state.get("first_scene_delivered"))
+    if scene_id == "start_scene" and (game_started or start_requested):
         base.extend([START_SCENE_FILE, "data/scenes/start_scene_logic.md"])
 
     character_map = {
         "akira": "characters/main/akira_akatsumi.md",
+        "akira_akatsumi": "characters/main/akira_akatsumi.md",
         "jun_carter": "characters/main/jun_carter.md",
         "irey": "characters/main/irey.md",
         "emma": "characters/main/emma.md",
         "raiden_sterling": "characters/main/raiden_sterling_final.md",
-        "yuna": "characters/main/yuna.md",
+        "raiden": "characters/main/raiden_sterling_final.md",
+        "ray_carter": "characters/main/ray_carter.md",
+        "haru_foster": "characters/main/haru_foster.md",
+        "miki_larsen": "characters/main/miki_larsen.md",
         "miki": "characters/main/miki_larsen.md",
-        "natsu": "characters/main/natsu.md",
+        "alex": "characters/main/alex.md",
+        "yuna": "characters/main/yuna.md",
+        "samuel_sterling": "characters/main/samuel_sterling.md",
     }
     knowledge_map = {
         "akira": "knowledge/characters/akira_knowledge.md",
+        "akira_akatsumi": "knowledge/characters/akira_knowledge.md",
         "jun_carter": "knowledge/characters/jun_carter_knowledge.md",
         "irey": "knowledge/characters/irey_knowledge.md",
         "emma": "knowledge/characters/emma_knowledge.md",
         "raiden_sterling": "knowledge/characters/raiden_sterling_knowledge.md",
+        "raiden": "knowledge/characters/raiden_sterling_knowledge.md",
         "yuna": "knowledge/characters/yuna_knowledge.md",
+        "miki_larsen": "knowledge/characters/miki_knowledge.md",
         "miki": "knowledge/characters/miki_knowledge.md",
-        "natsu": "knowledge/characters/natsu_knowledge.md",
     }
 
     active = list(state.get("active_characters") or [])
     nearby = list(state.get("nearby_characters") or [])
+    if not start_requested and not game_started and scene_id == "start_scene":
+        active = []
+        nearby = []
+
     for character_id in dict.fromkeys(active + nearby):
         if character_id in character_map:
             base.append(character_map[character_id])
@@ -208,28 +265,49 @@ def build_required_files(state: Dict[str, Any], mode: str) -> List[str]:
     return existing_files(base)
 
 
+def get_turn_counts(session_id: str, current_state: Dict[str, Any]) -> Dict[str, int]:
+    story_lines = get_story_lines(session_id)
+    counter = story_lines.get("turn_counter") if isinstance(story_lines, dict) else None
+    if not isinstance(counter, dict):
+        counter = {}
+    total = int(counter.get("total_game_turns", current_state.get("turn_counter", 0)) or 0)
+    since = int(counter.get("since_last_compaction", current_state.get("since_last_compaction", 0)) or 0)
+    every = int(counter.get("compact_every_turns", current_state.get("compact_every", 15)) or 15)
+    return {"total_game_turns": total, "since_last_compaction": since, "compact_every_turns": every}
+
+
 def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, Any]:
     mode = classify_mode(req)
+    start_requested = is_start_command(req.user_input)
     is_game_turn = mode == "play"
     state = get_current_state(session_id)
     scene_id = state.get("scene_id", "start_scene")
+    game_started = bool(state.get("game_started") or state.get("first_scene_delivered"))
+
     first_scene_text = ""
     must_output_initial_scene_text = False
+    can_generate_scene = is_game_turn
+    response_mode = "generate_next_scene_from_contract"
 
-    if is_game_turn and scene_id == "start_scene" and not state.get("first_scene_delivered", False):
-        first_scene_text = get_start_scene_text()
-        must_output_initial_scene_text = bool(first_scene_text)
+    if is_game_turn and scene_id == "start_scene" and not game_started:
+        if start_requested:
+            first_scene_text = get_start_scene_text()
+            must_output_initial_scene_text = bool(first_scene_text)
+            response_mode = "emit_initial_scene_text_verbatim"
+        else:
+            can_generate_scene = False
+            response_mode = "await_start_command"
 
-    turn_counter = int(state.get("turn_counter", 0) or 0)
-    compact_every = int(state.get("compact_every", 15) or 15)
-    should_compact = is_game_turn and turn_counter > 0 and turn_counter % compact_every == 0
+    turn_counts = get_turn_counts(session_id, state)
+    should_compact = is_game_turn and game_started and turn_counts["since_last_compaction"] >= turn_counts["compact_every_turns"]
 
     return {
         "session_id": safe_session_id(session_id),
         "mode": mode,
         "is_game_turn": is_game_turn,
-        "can_generate_scene": True,
-        "response_mode": "emit_initial_scene_text_verbatim" if must_output_initial_scene_text else "generate_next_scene_from_contract",
+        "start_requested": start_requested,
+        "can_generate_scene": can_generate_scene,
+        "response_mode": response_mode,
         "must_output_initial_scene_text": must_output_initial_scene_text,
         "initial_scene_text": first_scene_text,
         "current_scene_anchor": {
@@ -246,19 +324,22 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
             "event_id": scene_id,
             "next_required_event": "raiden_motorcycle_arrival" if scene_id == "start_scene" else None,
         },
-        "required_files": build_required_files(state, mode),
+        "required_files": build_required_files(state, mode, start_requested),
         "optional_files": [],
         "forbidden_files_or_topics": [
             "do_not_load_inactive_future_characters",
             "do_not_use_hidden_lore_as_npc_knowledge",
             "do_not_simulate_empty_steps",
+            "do_not_emit_initial_scene_before_start_command",
         ],
         "topic_triggers": ["start_scene", "calendar", "scene_format"],
         "relationship_pairs_needed": [],
-        "turn_counter": turn_counter,
-        "compact_every": compact_every,
+        "turn_counter": turn_counts,
+        "compact_every": turn_counts["compact_every_turns"],
         "should_compact": should_compact,
         "checks": [
+            "emit_initial_scene_text_only_if_user_input_is_start_command",
+            "if_response_mode_await_start_command_do_not_generate_scene",
             "if_must_output_initial_scene_text_true_emit_initial_scene_text_verbatim",
             "do_not_reveal_unknown_names",
             "do_not_introduce_echo_before_calendar_condition",
@@ -266,7 +347,7 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
             "do_not_advance_time_for_technical_turn",
             "story_not_simulator_or_sandbox",
         ],
-        "message": "Turn contract ready. If must_output_initial_scene_text is true, output initial_scene_text verbatim.",
+        "message": "Turn contract ready. Initial scene is emitted only after command 'начнем' / 'начнём'.",
     }
 
 
@@ -289,6 +370,7 @@ def actions_schema_json() -> Dict[str, Any]:
         "session_id": {"type": "string"},
         "mode": {"type": "string"},
         "is_game_turn": {"type": "boolean"},
+        "start_requested": {"type": "boolean"},
         "can_generate_scene": {"type": "boolean"},
         "response_mode": {"type": "string"},
         "must_output_initial_scene_text": {"type": "boolean"},
@@ -312,7 +394,11 @@ def actions_schema_json() -> Dict[str, Any]:
         "forbidden_files_or_topics": string_array,
         "topic_triggers": string_array,
         "relationship_pairs_needed": string_array,
-        "turn_counter": {"type": "integer"},
+        "turn_counter": object_schema({
+            "total_game_turns": {"type": "integer"},
+            "since_last_compaction": {"type": "integer"},
+            "compact_every_turns": {"type": "integer"},
+        }),
         "compact_every": {"type": "integer"},
         "should_compact": {"type": "boolean"},
         "checks": string_array,
@@ -329,7 +415,7 @@ def actions_schema_json() -> Dict[str, Any]:
         "openapi": "3.1.0",
         "info": {
             "title": "Akira Main 1206 API",
-            "version": "1.0.0",
+            "version": "1.1.0",
             "description": "Railway API for Akira Main 1206 session context and state saving.",
         },
         "servers": [{"url": PUBLIC_BASE_URL}],
@@ -363,18 +449,14 @@ def actions_schema_json() -> Dict[str, Any]:
                     "parameters": [{"name": "session_id", "in": "path", "required": True, "schema": {"type": "string"}}],
                     "requestBody": {
                         "required": True,
-                        "content": {
-                            "application/json": {
-                                "schema": object_schema({
-                                    "user_input": {"type": "string"},
-                                    "mode": {"type": "string", "enum": ["play", "technical", "audit", "transfer"]},
-                                    "client_context": object_schema({
-                                        "last_assistant_message_id": {"type": "string"},
-                                        "known_current_scene_anchor": {"type": "string"},
-                                    }),
-                                }, required=["user_input", "mode"])
-                            }
-                        },
+                        "content": {"application/json": {"schema": object_schema({
+                            "user_input": {"type": "string"},
+                            "mode": {"type": "string", "enum": ["play", "technical", "audit", "transfer"]},
+                            "client_context": object_schema({
+                                "last_assistant_message_id": {"type": "string"},
+                                "known_current_scene_anchor": {"type": "string"},
+                            }),
+                        }, required=["user_input", "mode"]) }},
                     },
                     "responses": {"200": {"description": "Turn contract", "content": {"application/json": {"schema": turn_contract_response}}}},
                 }
@@ -386,27 +468,24 @@ def actions_schema_json() -> Dict[str, Any]:
                     "parameters": [{"name": "session_id", "in": "path", "required": True, "schema": {"type": "string"}}],
                     "requestBody": {
                         "required": True,
-                        "content": {
-                            "application/json": {
-                                "schema": object_schema({
-                                    "scene_id": {"type": "string"},
-                                    "scene_text": {"type": "string"},
-                                    "technical": {"type": "boolean"},
-                                    "state_patches": object_schema({
-                                        "current_state_patch": object_schema({}),
-                                        "scene_history_entry": object_schema({}),
-                                        "story_line_patches": object_schema({}),
-                                        "relationship_patches": object_schema({}),
-                                        "knowledge_patches": object_schema({}),
-                                        "inventory_patches": object_schema({}),
-                                        "rumor_patches": object_schema({}),
-                                        "reputation_patches": object_schema({}),
-                                        "power_state_patches": object_schema({}),
-                                        "summary_update": {"type": "string"},
-                                    }),
-                                }, required=["scene_id", "scene_text", "technical"])
-                            }
-                        },
+                        "content": {"application/json": {"schema": object_schema({
+                            "scene_id": {"type": "string"},
+                            "scene_text": {"type": "string"},
+                            "technical": {"type": "boolean"},
+                            "state_patches": object_schema({
+                                "current_state_patch": object_schema({}),
+                                "scene_history_entry": object_schema({}),
+                                "story_line_patches": object_schema({}),
+                                "relationship_patches": object_schema({}),
+                                "knowledge_patches": object_schema({}),
+                                "inventory_patches": object_schema({}),
+                                "rumor_patches": object_schema({}),
+                                "reputation_patches": object_schema({}),
+                                "power_state_patches": object_schema({}),
+                                "summary_update": {"type": "string"},
+                                "compaction_summary": {"type": "string"},
+                            }),
+                        }, required=["scene_id", "scene_text", "technical"]) }},
                     },
                     "responses": {"200": {"description": "Turn result saved", "content": {"application/json": {"schema": turn_result_response}}}},
                 }
@@ -416,14 +495,14 @@ def actions_schema_json() -> Dict[str, Any]:
 
 
 def actions_schema_yaml() -> str:
-    return """
+    return f"""
 openapi: 3.1.0
 info:
   title: Akira Main 1206 API
-  version: "1.0.0"
+  version: "1.1.0"
   description: Railway API for Akira Main 1206 session context and state saving.
 servers:
-  - url: https://akira-main-1206-production.up.railway.app
+  - url: {PUBLIC_BASE_URL}
 paths:
   /health:
     get:
@@ -432,17 +511,6 @@ paths:
       responses:
         "200":
           description: API is running
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  status:
-                    type: string
-                  time:
-                    type: string
   /debug/volume:
     get:
       operationId: debugVolume
@@ -450,22 +518,7 @@ paths:
       responses:
         "200":
           description: Railway volume status
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  mount:
-                    type: string
-                  exists:
-                    type: boolean
-                  sessions_dir:
-                    type: string
-                  test_file_exists:
-                    type: boolean
-  /api/v1/sessions/{session_id}/turn-contract:
+  /api/v1/sessions/{{session_id}}/turn-contract:
     post:
       operationId: getTurnContract
       summary: Get turn context before generating a scene
@@ -488,46 +541,10 @@ paths:
                 mode:
                   type: string
                   enum: [play, technical, audit, transfer]
-                client_context:
-                  type: object
-                  properties:
-                    last_assistant_message_id:
-                      type: string
-                    known_current_scene_anchor:
-                      type: string
       responses:
         "200":
           description: Turn contract
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  session_id:
-                    type: string
-                  mode:
-                    type: string
-                  is_game_turn:
-                    type: boolean
-                  can_generate_scene:
-                    type: boolean
-                  response_mode:
-                    type: string
-                  must_output_initial_scene_text:
-                    type: boolean
-                  initial_scene_text:
-                    type: string
-                  required_files:
-                    type: array
-                    items:
-                      type: string
-                  checks:
-                    type: array
-                    items:
-                      type: string
-                  message:
-                    type: string
-  /api/v1/sessions/{session_id}/turn-result:
+  /api/v1/sessions/{{session_id}}/turn-result:
     post:
       operationId: submitTurnResult
       summary: Save generated scene and state patches
@@ -553,26 +570,9 @@ paths:
                   type: boolean
                 state_patches:
                   type: object
-                  properties:
-                    current_state_patch:
-                      type: object
-                      properties: {}
-                    summary_update:
-                      type: string
       responses:
         "200":
           description: Turn result saved
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  status:
-                    type: string
-                  session_id:
-                    type: string
 """.strip()
 
 
@@ -585,6 +585,7 @@ def root() -> Dict[str, Any]:
         "openapi": "/openapi.json",
         "actions_schema_yaml": "/openapi-actions.yaml",
         "actions_schema_json": "/openapi-actions.json",
+        "start_command": "начнем",
     }
 
 
@@ -624,7 +625,7 @@ def turn_result(session_id: str, req: TurnResultRequest) -> Dict[str, Any]:
 
     if req.technical:
         append_jsonl(session_dir / "technical_history.jsonl", {"time": utc_now(), "scene_id": req.scene_id, "text": req.scene_text})
-        return {"success": True, "status": "technical_saved", "session_id": safe_id}
+        return {"success": True, "status": "technical_saved", "session_id": safe_id, "updated_files": ["technical_history.jsonl"]}
 
     append_jsonl(session_dir / "scene_history.jsonl", {
         "time": utc_now(),
@@ -634,22 +635,49 @@ def turn_result(session_id: str, req: TurnResultRequest) -> Dict[str, Any]:
     })
 
     current_state = get_current_state(session_id)
+    story_lines = get_story_lines(session_id)
+
     patch = req.state_patches.get("current_state_patch") if isinstance(req.state_patches, dict) else None
     if isinstance(patch, dict):
         current_state.update(patch)
 
     if req.scene_id == "start_scene":
+        current_state["game_started"] = True
         current_state["first_scene_delivered"] = True
 
-    current_state["turn_counter"] = int(current_state.get("turn_counter", 0) or 0) + 1
+    counter = story_lines.setdefault("turn_counter", {})
+    counter["total_game_turns"] = int(counter.get("total_game_turns", current_state.get("turn_counter", 0)) or 0) + 1
+    counter["since_last_compaction"] = int(counter.get("since_last_compaction", current_state.get("since_last_compaction", 0)) or 0) + 1
+    counter["compact_every_turns"] = int(counter.get("compact_every_turns", current_state.get("compact_every", 15)) or 15)
+
+    compaction_summary = None
+    if isinstance(req.state_patches, dict):
+        compaction_summary = req.state_patches.get("compaction_summary")
+    if counter["since_last_compaction"] >= counter["compact_every_turns"] and compaction_summary:
+        story_lines.setdefault("compacted_history", []).append({
+            "turn": counter["total_game_turns"],
+            "date": current_state.get("date"),
+            "time": current_state.get("time"),
+            "summary": compaction_summary,
+        })
+        counter["last_compaction_turn"] = counter["total_game_turns"]
+        counter["last_compaction_date"] = current_state.get("date")
+        counter["last_compaction_note"] = compaction_summary
+        counter["since_last_compaction"] = 0
+
+    current_state["turn_counter"] = counter["total_game_turns"]
+    current_state["since_last_compaction"] = counter["since_last_compaction"]
+    current_state["compact_every"] = counter["compact_every_turns"]
+
     save_current_state(session_id, current_state)
+    save_story_lines(session_id, story_lines)
     write_json_atomic(session_dir / "last_turn_result.json", req.model_dump())
 
     return {
         "success": True,
         "status": "turn_result_saved",
         "session_id": safe_id,
-        "updated_files": ["scene_history.jsonl", "last_turn_result.json", "current_state.json"],
+        "updated_files": ["scene_history.jsonl", "last_turn_result.json", "current_state.json", "story_lines.json"],
     }
 
 
