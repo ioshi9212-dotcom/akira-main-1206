@@ -16,7 +16,7 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SESSION_ID = os.getenv("DEFAULT_SESSION_ID", "main-1206-default")
 DEFAULT_PUBLIC_BASE_URL = "https://akira-main-1206-production-c042.up.railway.app"
 START_SCENE_FILE = "data/scenes/start_scene.md"
-MAX_FILE_CHARS = int(os.getenv("MAX_FILE_CHARS", "6500"))
+MAX_FILE_CHARS = int(os.getenv("MAX_FILE_CHARS", "3500"))
 START_COMMANDS = {"начнем", "начнём", "начинай", "старт", "start", "begin"}
 
 STATE_FILES = [
@@ -109,8 +109,8 @@ PUBLIC_BASE_URL = normalize_base_url(os.getenv("PUBLIC_BASE_URL")) or normalize_
 
 app = FastAPI(
     title="Akira Main 1206 API",
-    version="1.5.4",
-    description="Railway API for Akira Main 1206 with compact day-scoped turn context.",
+    version="1.5.5",
+    description="Railway API for Akira Main 1206 with compact turn context and exact first scene through processTurn.",
 )
 
 
@@ -393,7 +393,7 @@ def build_file_list(state: Dict[str, Any], mode: str, session_id: str, user_inpu
     started = bool(state.get("game_started") or state.get("first_scene_delivered"))
 
     if mode == "play" and scene_id == "start_scene" and started:
-        files.extend([START_SCENE_FILE, "data/scenes/start_scene_logic.md"])
+        files.append("data/scenes/start_scene_logic.md")
 
     if mode == "play":
         active = list(state.get("active_characters") or [])
@@ -424,8 +424,8 @@ def get_turn_counts(session_id: str, state: Dict[str, Any]) -> Dict[str, int]:
 
 
 def scene_output_contract(started: bool, response_mode: str) -> Dict[str, Any]:
-    if response_mode == "emit_initial_scene_text_verbatim":
-        return {"mode": "initial_exact_text", "must_output_only_initial_scene_text": True, "do_not_add_header_or_options": True}
+    if response_mode == "call_processTurn_for_initial_scene":
+        return {"mode": "call_processTurn", "must_call_processTurn_for_first_scene": True, "do_not_generate_scene_from_turn_contract": True}
     return {
         "mode": "generated_scene",
         "mandatory_source_file": "gpt/scene_format.md",
@@ -466,9 +466,8 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
     can_generate = mode == "play"
     if mode == "play" and scene_id == "start_scene" and not started:
         if start_requested:
-            initial_text = get_start_scene_text()
-            response_mode = "emit_initial_scene_text_verbatim" if initial_text else "initial_scene_text_missing"
-            can_generate = bool(initial_text)
+            response_mode = "call_processTurn_for_initial_scene"
+            can_generate = False
         else:
             response_mode = "await_start_command"
             can_generate = False
@@ -485,7 +484,7 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
         "start_requested": start_requested,
         "can_generate_scene": can_generate,
         "response_mode": response_mode,
-        "must_output_initial_scene_text": bool(initial_text),
+        "must_output_initial_scene_text": False,
         "initial_scene_text": initial_text,
         "current_scene_anchor": {
             "date": state.get("date"),
@@ -507,6 +506,7 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
         "compact_every": counts["compact_every_turns"],
         "should_compact": mode == "play" and started and counts["since_last_compaction"] >= counts["compact_every_turns"],
         "checks": [
+            "For first scene, use processTurn. Do not generate initial scene from turn-contract.",
             "Apply scene_output_contract before writing user-visible scene.",
             "Use calendar only for the current date unless timeskipping.",
             "Use required_file_contents before character behavior.",
@@ -514,9 +514,9 @@ def build_turn_contract(session_id: str, req: TurnContractRequest) -> Dict[str, 
             "Check character knowledge before each NPC line.",
             "One short Akira micro-reply is allowed only if needed; do not play a full dialogue for her.",
             "Stop on direct question to Akira.",
-            "After scene output, call submitTurnResult or applyTurnResult.",
+            "After generated scene output, call submitTurnResult or applyTurnResult.",
         ],
-        "message": "Turn context ready. Compact current-date calendar, active character cards, knowledge and scene contract included.",
+        "message": "Turn context ready. First scene must be requested through processTurn; post-start context excludes full start_scene.md.",
     }
 
 
@@ -606,7 +606,7 @@ def session_parameter() -> Dict[str, Any]:
 def actions_schema_json() -> Dict[str, Any]:
     return {
         "openapi": "3.1.0",
-        "info": {"title": "Akira Main 1206 API", "version": "1.5.4"},
+        "info": {"title": "Akira Main 1206 API", "version": "1.5.5"},
         "servers": [{"url": PUBLIC_BASE_URL}],
         "paths": {
             "/health": {"get": {"operationId": "healthCheck", "summary": "Check API health", "responses": {"200": {"description": "API is running"}}}},
@@ -624,7 +624,7 @@ def actions_schema_json() -> Dict[str, Any]:
 
 @app.get("/")
 def root() -> Dict[str, Any]:
-    return {"status": "ok", "service": "Akira Main 1206 API", "version": "1.5.4", "actions_schema_json": "/openapi-actions.json"}
+    return {"status": "ok", "service": "Akira Main 1206 API", "version": "1.5.5", "actions_schema_json": "/openapi-actions.json"}
 
 
 @app.get("/health")
