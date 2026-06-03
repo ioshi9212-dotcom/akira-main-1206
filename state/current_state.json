@@ -1,0 +1,39 @@
+{
+  "schema": "current_state_v1",
+  "project": "akira-main-1206",
+  "session_id": "main-1206-default",
+  "runtime": {
+    "platform": "Railway",
+    "persistent_storage": "Railway Volume",
+    "repository_policy": "repository stores canon, templates and starter state; live runtime state is copied to Railway Volume and updated there",
+    "secret_policy": "runtime secrets are not stored in repository"
+  },
+  "date": "1206-08-31",
+  "time": "02:40",
+  "time_of_day": "night",
+  "scene_id": "start_scene",
+  "current_scene_anchor": "data/scenes/start_scene.md",
+  "calendar_ref": "calendar/story_calendar.md",
+  "location": "jun_house_akira_room",
+  "location_name": "дом Джуна Картера, комната Акиры",
+  "active_characters": ["akira", "jun_carter", "irey", "emma"],
+  "nearby_characters": [],
+  "conditional_characters": ["raiden_sterling"],
+  "akira_state": "резко проснулась; тело напряжено; память держит только последние два года",
+  "akira_visible_state": "в серой пижаме, босиком, резко проснулась ночью",
+  "visible_items": ["записка с именем Рэй и Восточным сектором"],
+  "nearby_items": ["стол", "дверь", "окно", "кровать"],
+  "first_scene_delivered": false,
+  "next_required_event": "start_scene",
+  "refs": {
+    "story_lines": "state/story_lines.json",
+    "relationships": "state/relationships.json",
+    "knowledge": "state/knowledge_state.json",
+    "reputation": "state/reputation_state.json",
+    "rumors": "state/rumors_state.json",
+    "inventory": "state/inventory_state.json",
+    "power": "state/power_state.json",
+    "scene_history": "state/scene_history.json"
+  },
+  "updated_at": null
+}
