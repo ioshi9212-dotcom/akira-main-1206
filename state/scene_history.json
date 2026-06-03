@@ -1,0 +1,32 @@
+{
+  "schema": "scene_history_v1",
+  "project": "akira-main-1206",
+  "rules": [
+    "Хранить краткую историю сцен, не огромные полотна.",
+    "Каждая запись фиксирует дату, время, локацию, участников, действие игрока, итог и изменения памяти.",
+    "Если сцена содержит важные реплики, сохранять только meaningful quotes.",
+    "Если появился NPC, слух, предмет или новая локация — указать это в записи.",
+    "Технические ходы не добавлять как игровые сцены."
+  ],
+  "entries": [],
+  "entry_template": {
+    "scene_id": "scene_0001",
+    "date": "1206-08-31",
+    "time": "02:40",
+    "location_id": "jun_house_akira_room",
+    "active_characters": ["akira"],
+    "player_input": null,
+    "summary": "",
+    "important_lines": [],
+    "relationship_changes": [],
+    "knowledge_changes": [],
+    "reputation_changes": [],
+    "power_changes": [],
+    "rumor_changes": [],
+    "inventory_changes": [],
+    "new_or_updated_npcs": [],
+    "new_or_updated_locations": [],
+    "future_lock_progress": [],
+    "notes": []
+  }
+}
